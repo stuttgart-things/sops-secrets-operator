@@ -45,7 +45,7 @@ jobs:
             --repository-name stuttgart-things/sops-secrets-operator
             --tag ${{ steps.meta.outputs.commit }}
             --registry-url ttl.sh
-            --dockerfile Dockerfile
+            --dockerfile cluster/images/sops-secrets-operator/Dockerfile
         env:
           DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
 
