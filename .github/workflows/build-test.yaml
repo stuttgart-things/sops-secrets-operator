@@ -1,0 +1,54 @@
+---
+name: CI - Build & Test
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: build-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build ./...
+
+      - name: Install envtest
+        run: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+
+      - name: Cache envtest binaries
+        uses: actions/cache@v5
+        with:
+          path: ~/.local/share/kubebuilder-envtest
+          key: envtest-${{ runner.os }}-1.31.0
+
+      - name: Test
+        run: |
+          KUBEBUILDER_ASSETS=$(setup-envtest use 1.31.0 -p path)
+          export KUBEBUILDER_ASSETS
+          go test -race ./... -v -count=1
+
+      - name: Lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.11.4
+          golangci-lint run ./...
