@@ -17,79 +17,148 @@ limitations under the License.
 package controller
 
 import (
-	"context"
+	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	sopsv1alpha1 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha1"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/source"
 )
 
 var _ = Describe("SopsSecret Controller", func() {
-	Context("When reconciling a resource", func() {
-		const resourceName = "test-resource"
+	const namespace = "default"
+	var counter int
+	var uniqueName func(prefix string) string
 
-		ctx := context.Background()
+	BeforeEach(func() {
+		counter++
+		uniqueName = func(prefix string) string { return fmt.Sprintf("%s-%d", prefix, counter) }
+	})
 
-		typeNamespacedName := types.NamespacedName{
-			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+	makeCR := func(name, repoRef string) *sopsv1alpha1.SopsSecret {
+		return &sopsv1alpha1.SopsSecret{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+			Spec: sopsv1alpha1.SopsSecretSpec{
+				Source: sopsv1alpha1.SourceRef{
+					RepositoryRef: sopsv1alpha1.LocalObjectReference{Name: repoRef},
+					Path:          "secrets.enc.yaml",
+				},
+				Decryption: sopsv1alpha1.DecryptionSpec{
+					KeyRef: sopsv1alpha1.SecretKeyRef{Name: "age-key", Key: "age.agekey"},
+				},
+				Data: []sopsv1alpha1.DataMapping{{Key: "DB_PASSWORD", From: "db_password"}},
+			},
 		}
-		sopssecret := &sopsv1alpha1.SopsSecret{}
+	}
 
-		BeforeEach(func() {
-			By("creating the custom resource for the Kind SopsSecret")
-			err := k8sClient.Get(ctx, typeNamespacedName, sopssecret)
-			if err != nil && errors.IsNotFound(err) {
-				resource := &sopsv1alpha1.SopsSecret{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: "default",
-					},
-					Spec: sopsv1alpha1.SopsSecretSpec{
-						Source: sopsv1alpha1.SourceRef{
-							RepositoryRef: sopsv1alpha1.LocalObjectReference{Name: "does-not-exist"},
-							Path:          "foo.enc.yaml",
-						},
-						Decryption: sopsv1alpha1.DecryptionSpec{
-							KeyRef: sopsv1alpha1.SecretKeyRef{Name: "age-key", Key: "age.agekey"},
-						},
-						Data: []sopsv1alpha1.DataMapping{{Key: "A", From: "a"}},
-					},
-				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+	reconcileOnce := func(name string) *sopsv1alpha1.SopsSecret {
+		r := &SopsSecretReconciler{
+			Client:   k8sClient,
+			Scheme:   k8sClient.Scheme(),
+			Registry: source.NewRegistry(),
+		}
+		_, err := r.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Namespace: namespace, Name: name},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		out := &sopsv1alpha1.SopsSecret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, out)).To(Succeed())
+		return out
+	}
+
+	condition := func(ss *sopsv1alpha1.SopsSecret, t string) *metav1.Condition {
+		for i := range ss.Status.Conditions {
+			if ss.Status.Conditions[i].Type == t {
+				return &ss.Status.Conditions[i]
 			}
-		})
+		}
+		return nil
+	}
 
-		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &sopsv1alpha1.SopsSecret{}
-			err := k8sClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
+	Context("first reconcile", func() {
+		It("adds the finalizer and requeues", func() {
+			name := uniqueName("ss-finalizer")
+			Expect(k8sClient.Create(ctx, makeCR(name, "nonexistent"))).To(Succeed())
 
-			By("Cleanup the specific resource instance SopsSecret")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
-		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
-			controllerReconciler := &SopsSecretReconciler{
+			_, _ = (&SopsSecretReconciler{
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Registry: source.NewRegistry(),
-			}
-
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
+			}).Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: namespace, Name: name},
 			})
-			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
+
+			got := &sopsv1alpha1.SopsSecret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, got)).To(Succeed())
+			Expect(got.Finalizers).To(ContainElement(Finalizer))
+
+			Expect(k8sClient.Delete(ctx, got)).To(Succeed())
+		})
+	})
+
+	Context("when the referenced GitRepository is missing", func() {
+		It("sets SourceReady=False with reason SourceMissing", func() {
+			name := uniqueName("ss-no-repo")
+			Expect(k8sClient.Create(ctx, makeCR(name, "missing-repo"))).To(Succeed())
+
+			// First reconcile adds finalizer and requeues.
+			_ = reconcileOnce(name)
+			// Second reconcile reaches the source-resolution path.
+			got := reconcileOnce(name)
+
+			c := condition(got, sopsv1alpha1.ConditionSourceReady)
+			Expect(c).NotTo(BeNil())
+			Expect(c.Status).To(Equal(metav1.ConditionFalse))
+			Expect(c.Reason).To(Equal("SourceMissing"))
+		})
+	})
+
+	Context("when the GitRepository exists but is not Ready", func() {
+		It("sets SourceReady=False with reason SourceNotReady", func() {
+			name := uniqueName("ss-repo-not-ready")
+			repoName := name + "-repo"
+
+			// Create a GitRepository CR without setting SourceReady=True.
+			Expect(k8sClient.Create(ctx, &sopsv1alpha1.GitRepository{
+				ObjectMeta: metav1.ObjectMeta{Name: repoName, Namespace: namespace},
+				Spec:       sopsv1alpha1.GitRepositorySpec{URL: "https://example.invalid/repo.git"},
+			})).To(Succeed())
+
+			Expect(k8sClient.Create(ctx, makeCR(name, repoName))).To(Succeed())
+			_ = reconcileOnce(name)
+			got := reconcileOnce(name)
+
+			c := condition(got, sopsv1alpha1.ConditionSourceReady)
+			Expect(c).NotTo(BeNil())
+			Expect(c.Status).To(Equal(metav1.ConditionFalse))
+			Expect(c.Reason).To(Equal("SourceNotReady"))
+		})
+	})
+
+	Context("CRD schema validation", func() {
+		It("rejects a SopsSecret with empty data slice", func() {
+			name := uniqueName("ss-bad-schema")
+			bad := &sopsv1alpha1.SopsSecret{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+				Spec: sopsv1alpha1.SopsSecretSpec{
+					Source: sopsv1alpha1.SourceRef{
+						RepositoryRef: sopsv1alpha1.LocalObjectReference{Name: "r"},
+						Path:          "x.yaml",
+					},
+					Decryption: sopsv1alpha1.DecryptionSpec{
+						KeyRef: sopsv1alpha1.SecretKeyRef{Name: "k", Key: "age"},
+					},
+					Data: []sopsv1alpha1.DataMapping{},
+				},
+			}
+			err := k8sClient.Create(ctx, bad)
+			Expect(err).To(HaveOccurred())
 		})
 	})
 })

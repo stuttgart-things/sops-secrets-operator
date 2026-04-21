@@ -89,8 +89,8 @@ type GitRepositoryStatus struct {
 
 // Condition types used by GitRepository.
 const (
-	ConditionSourceReady   = "SourceReady"
-	ConditionAuthResolved  = "AuthResolved"
+	ConditionSourceReady  = "SourceReady"
+	ConditionAuthResolved = "AuthResolved"
 )
 
 // +kubebuilder:object:root=true
