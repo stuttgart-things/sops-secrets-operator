@@ -1,9 +1,48 @@
+---
+# Auth Secret for a GitRepository using HTTP basic auth.
+# Password may be a personal access token.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: git-auth
+  namespace: apps
+type: Opaque
+stringData:
+  username: git
+  password: ghp_yourTokenHere
+---
 apiVersion: sops.stuttgart-things.com/v1alpha1
 kind: GitRepository
 metadata:
+  name: platform-secrets
+  namespace: apps
   labels:
     app.kubernetes.io/name: sops-secrets-operator
-    app.kubernetes.io/managed-by: kustomize
-  name: gitrepository-sample
 spec:
-  # TODO(user): Add fields here
+  url: https://github.com/your-org/secrets.git
+  branch: main
+  # Alternatively, pin to a specific commit SHA or tag:
+  # revision: v1.2.3
+  interval: 5m
+  auth:
+    type: basic
+    secretRef:
+      name: git-auth
+---
+# SSH-auth variant. The secret must carry privateKey + knownHosts;
+# user and passphrase are optional. Strict host-key checking is
+# mandatory — there is no insecure fallback.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: git-ssh
+  namespace: apps
+type: Opaque
+stringData:
+  user: git
+  privateKey: |
+    -----BEGIN OPENSSH PRIVATE KEY-----
+    ...
+    -----END OPENSSH PRIVATE KEY-----
+  knownHosts: |
+    github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
