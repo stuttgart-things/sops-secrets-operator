@@ -1,6 +1,6 @@
 module github.com/stuttgart-things/sops-secrets-operator
 
-go 1.25.3
+go 1.26.0
 
 require (
 	github.com/getsops/sops/v3 v3.12.2
