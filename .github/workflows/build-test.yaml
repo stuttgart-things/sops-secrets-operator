@@ -49,6 +49,4 @@ jobs:
           go test -race ./... -v -count=1
 
       - name: Lint
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.11.4
-          golangci-lint run ./...
+        run: make lint
