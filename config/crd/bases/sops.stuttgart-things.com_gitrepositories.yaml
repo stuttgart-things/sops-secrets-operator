@@ -14,10 +14,23 @@ spec:
     singular: gitrepository
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.url
+      name: URL
+      type: string
+    - jsonPath: .status.lastSyncedCommit
+      name: Commit
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="SourceReady")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: GitRepository is the Schema for the gitrepositories API
+        description: GitRepository is a remote source of SOPS-encrypted files.
         properties:
           apiVersion:
             description: |-
@@ -37,27 +50,66 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of GitRepository
+            description: GitRepositorySpec describes a git repository to clone and
+              keep synced.
             properties:
-              foo:
-                description: foo is an example field of GitRepository. Edit gitrepository_types.go
-                  to remove/update
+              auth:
+                description: |-
+                  GitAuth configures authentication to the remote repository.
+
+                  For "basic" the referenced Secret must carry `username` and `password`
+                  keys (password may be a personal access token).
+
+                  For "ssh" the referenced Secret must carry `privateKey` and `knownHosts`,
+                  and may optionally carry `passphrase` and `user`. Strict host-key
+                  checking is enforced; `knownHosts` is required.
+                properties:
+                  secretRef:
+                    description: LocalObjectReference is a reference to an object
+                      in the same namespace.
+                    properties:
+                      name:
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  type:
+                    description: GitAuthType identifies the authentication method
+                      for a GitRepository.
+                    enum:
+                    - basic
+                    - ssh
+                    type: string
+                required:
+                - secretRef
+                - type
+                type: object
+              branch:
+                description: Branch is fetched when Revision is empty. Defaults to
+                  "main".
                 type: string
+              interval:
+                description: Interval between reconciles. Defaults to 5m.
+                type: string
+              revision:
+                description: Revision pins to a commit SHA or tag. When non-empty
+                  it overrides Branch.
+                type: string
+              url:
+                minLength: 1
+                type: string
+            required:
+            - url
             type: object
           status:
-            description: status defines the observed state of GitRepository
+            description: GitRepositoryStatus is the observed state of the GitRepository.
             properties:
+              cacheReady:
+                description: CacheReady is true when the local cache matches the configured
+                  ref.
+                type: boolean
               conditions:
-                description: |-
-                  conditions represent the current state of the GitRepository resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -116,6 +168,15 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              lastSyncedCommit:
+                description: LastSyncedCommit is the commit SHA at the last successful
+                  reconcile.
+                type: string
+              observedGeneration:
+                description: ObservedGeneration reflects the generation most recently
+                  reconciled.
+                format: int64
+                type: integer
             type: object
         required:
         - spec

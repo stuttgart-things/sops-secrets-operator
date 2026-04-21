@@ -18,46 +18,196 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	sopsv1alpha1 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha1"
+	"github.com/stuttgart-things/sops-secrets-operator/internal/git"
+	"github.com/stuttgart-things/sops-secrets-operator/internal/source"
 )
 
-// GitRepositoryReconciler reconciles a GitRepository object
+const (
+	defaultSyncInterval = 5 * time.Minute
+	// retryAfter is the backoff between retries when a reconcile fails.
+	retryAfter = 30 * time.Second
+
+	// GitRepoAuthSecretIndex is a field index on GitRepository pointing at
+	// the name of its auth secret reference. Used to enqueue GitRepositories
+	// when a referenced Secret changes.
+	GitRepoAuthSecretIndex = ".spec.auth.secretRef.name"
+)
+
+// GitRepositoryReconciler reconciles GitRepository objects.
 type GitRepositoryReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Registry *source.Registry
 }
 
 // +kubebuilder:rbac:groups=sops.stuttgart-things.com,resources=gitrepositories,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=sops.stuttgart-things.com,resources=gitrepositories/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=sops.stuttgart-things.com,resources=gitrepositories/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the GitRepository object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.23.3/pkg/reconcile
 func (r *GitRepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("gitrepository", req.NamespacedName)
 
-	// TODO(user): your logic here
+	var gr sopsv1alpha1.GitRepository
+	if err := r.Get(ctx, req.NamespacedName, &gr); err != nil {
+		if apierrors.IsNotFound(err) {
+			r.Registry.Forget(req.NamespacedName)
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
 
-	return ctrl.Result{}, nil
+	if !gr.DeletionTimestamp.IsZero() {
+		r.Registry.Forget(req.NamespacedName)
+		return ctrl.Result{}, nil
+	}
+
+	auth, err := r.resolveAuth(ctx, &gr)
+	if err != nil {
+		log.Error(err, "auth resolution failed")
+		setCondition(&gr.Status.Conditions, sopsv1alpha1.ConditionAuthResolved, metav1.ConditionFalse, "AuthFailed", err.Error())
+		setCondition(&gr.Status.Conditions, sopsv1alpha1.ConditionSourceReady, metav1.ConditionFalse, "AuthFailed", "waiting for auth")
+		gr.Status.CacheReady = false
+		if uerr := r.Status().Update(ctx, &gr); uerr != nil {
+			return ctrl.Result{}, uerr
+		}
+		return ctrl.Result{RequeueAfter: retryAfter}, nil
+	}
+	setCondition(&gr.Status.Conditions, sopsv1alpha1.ConditionAuthResolved, metav1.ConditionTrue, "AuthOK", "auth resolved")
+
+	cfg := git.Config{
+		URL:      gr.Spec.URL,
+		Branch:   gr.Spec.Branch,
+		Revision: gr.Spec.Revision,
+		Auth:     auth,
+	}
+	sha, err := r.Registry.EnsureCached(ctx, req.NamespacedName, cfg)
+	if err != nil {
+		log.Error(err, "fetch failed")
+		setCondition(&gr.Status.Conditions, sopsv1alpha1.ConditionSourceReady, metav1.ConditionFalse, "FetchFailed", err.Error())
+		gr.Status.CacheReady = false
+		if uerr := r.Status().Update(ctx, &gr); uerr != nil {
+			return ctrl.Result{}, uerr
+		}
+		return ctrl.Result{RequeueAfter: retryAfter}, nil
+	}
+
+	gr.Status.LastSyncedCommit = sha
+	gr.Status.CacheReady = true
+	gr.Status.ObservedGeneration = gr.Generation
+	short := sha
+	if len(short) > 7 {
+		short = short[:7]
+	}
+	setCondition(&gr.Status.Conditions, sopsv1alpha1.ConditionSourceReady, metav1.ConditionTrue, "Ready", "cache at "+short)
+	if err := r.Status().Update(ctx, &gr); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	interval := gr.Spec.Interval.Duration
+	if interval == 0 {
+		interval = defaultSyncInterval
+	}
+	return ctrl.Result{RequeueAfter: interval}, nil
 }
 
-// SetupWithManager sets up the controller with the Manager.
+func (r *GitRepositoryReconciler) resolveAuth(ctx context.Context, gr *sopsv1alpha1.GitRepository) (git.Auth, error) {
+	if gr.Spec.Auth == nil {
+		return git.Auth{}, nil
+	}
+	var sec corev1.Secret
+	if err := r.Get(ctx, client.ObjectKey{Namespace: gr.Namespace, Name: gr.Spec.Auth.SecretRef.Name}, &sec); err != nil {
+		return git.Auth{}, fmt.Errorf("get auth secret: %w", err)
+	}
+
+	switch gr.Spec.Auth.Type {
+	case sopsv1alpha1.GitAuthBasic:
+		if len(sec.Data["password"]) == 0 {
+			return git.Auth{}, fmt.Errorf("auth secret %q: missing 'password' key", sec.Name)
+		}
+		return git.Auth{Basic: &git.BasicAuth{
+			Username: string(sec.Data["username"]),
+			Password: string(sec.Data["password"]),
+		}}, nil
+
+	case sopsv1alpha1.GitAuthSSH:
+		if len(sec.Data["privateKey"]) == 0 {
+			return git.Auth{}, fmt.Errorf("auth secret %q: missing 'privateKey' key", sec.Name)
+		}
+		if len(sec.Data["knownHosts"]) == 0 {
+			return git.Auth{}, fmt.Errorf("auth secret %q: missing 'knownHosts' key (strict host-key checking is required)", sec.Name)
+		}
+		return git.Auth{SSH: &git.SSHAuth{
+			User:       string(sec.Data["user"]),
+			PrivateKey: sec.Data["privateKey"],
+			Passphrase: sec.Data["passphrase"],
+			KnownHosts: sec.Data["knownHosts"],
+		}}, nil
+
+	default:
+		return git.Auth{}, fmt.Errorf("unknown auth type %q", gr.Spec.Auth.Type)
+	}
+}
+
 func (r *GitRepositoryReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&sopsv1alpha1.GitRepository{},
+		GitRepoAuthSecretIndex,
+		func(obj client.Object) []string {
+			g := obj.(*sopsv1alpha1.GitRepository)
+			if g.Spec.Auth == nil {
+				return nil
+			}
+			return []string{g.Spec.Auth.SecretRef.Name}
+		},
+	); err != nil {
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&sopsv1alpha1.GitRepository{}).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.mapSecretToGitRepos)).
 		Named("gitrepository").
 		Complete(r)
+}
+
+func (r *GitRepositoryReconciler) mapSecretToGitRepos(ctx context.Context, obj client.Object) []reconcile.Request {
+	var list sopsv1alpha1.GitRepositoryList
+	if err := r.List(ctx, &list,
+		client.InNamespace(obj.GetNamespace()),
+		client.MatchingFields{GitRepoAuthSecretIndex: obj.GetName()},
+	); err != nil {
+		return nil
+	}
+	out := make([]reconcile.Request, 0, len(list.Items))
+	for _, g := range list.Items {
+		out = append(out, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&g)})
+	}
+	return out
+}
+
+// setCondition upserts a condition by type in the given slice.
+func setCondition(conds *[]metav1.Condition, condType string, status metav1.ConditionStatus, reason, msg string) {
+	meta.SetStatusCondition(conds, metav1.Condition{
+		Type:    condType,
+		Status:  status,
+		Reason:  reason,
+		Message: msg,
+	})
 }

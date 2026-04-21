@@ -37,6 +37,7 @@ import (
 
 	sopsv1alpha1 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha1"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/controller"
+	"github.com/stuttgart-things/sops-secrets-operator/internal/source"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -178,9 +179,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	registry := source.NewRegistry()
+
 	if err := (&controller.GitRepositoryReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Registry: registry,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "GitRepository")
 		os.Exit(1)
