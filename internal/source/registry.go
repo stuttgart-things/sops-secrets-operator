@@ -13,10 +13,12 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/stuttgart-things/sops-secrets-operator/internal/git"
+	"github.com/stuttgart-things/sops-secrets-operator/internal/metrics"
 )
 
 // Registry coordinates repo caches across reconcilers.
@@ -40,7 +42,16 @@ func NewRegistry() *Registry {
 // EnsureCached updates the cache for the GitRepository identified by key
 // and returns the resolved commit SHA. If the effective cache directory
 // has changed (e.g. URL/Branch/Revision edited), the old entry is evicted.
-func (r *Registry) EnsureCached(ctx context.Context, key client.ObjectKey, cfg git.Config) (string, error) {
+func (r *Registry) EnsureCached(ctx context.Context, key client.ObjectKey, cfg git.Config) (_ string, retErr error) {
+	start := time.Now()
+	defer func() {
+		result := metrics.ResultSuccess
+		if retErr != nil {
+			result = metrics.ResultError
+		}
+		metrics.GitFetchDurationSeconds.WithLabelValues(result).Observe(time.Since(start).Seconds())
+	}()
+
 	repo, err := git.New(cfg)
 	if err != nil {
 		return "", err

@@ -55,6 +55,8 @@ type SopsSecretManifestReconciler struct {
 
 func (r *SopsSecretManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithValues("sopssecretmanifest", req.NamespacedName)
+	setStage, finish := trackReconcile("SopsSecretManifest")
+	defer finish()
 
 	var sm sopsv1alpha1.SopsSecretManifest
 	if err := r.Get(ctx, req.NamespacedName, &sm); err != nil {
@@ -91,9 +93,11 @@ func (r *SopsSecretManifestReconciler) Reconcile(ctx context.Context, req ctrl.R
 		if apierrors.IsNotFound(err) {
 			msg = fmt.Sprintf("GitRepository %q not found", sm.Spec.Source.RepositoryRef.Name)
 		}
+		setStage(StageFetch)
 		return r.failManifestStatus(ctx, &sm, sopsv1alpha1.ConditionSourceReady, "SourceMissing", msg)
 	}
 	if !isSourceReady(&repo) {
+		setStage(StageFetch)
 		return r.failManifestStatus(ctx, &sm, sopsv1alpha1.ConditionSourceReady, "SourceNotReady",
 			fmt.Sprintf("GitRepository %q is not ready", repo.Name))
 	}
@@ -102,20 +106,24 @@ func (r *SopsSecretManifestReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// Read + decrypt.
 	content, commitSHA, err := r.Registry.Read(repoKey, sm.Spec.Source.Path)
 	if err != nil {
+		setStage(StageFetch)
 		return r.failManifestStatus(ctx, &sm, sopsv1alpha1.ConditionSourceReady, "ReadFailed", err.Error())
 	}
 	ageKey, err := keyresolve.Age(ctx, r.Client, sm.Namespace, sm.Spec.Decryption.KeyRef)
 	if err != nil {
+		setStage(StageDecrypt)
 		return r.failManifestStatus(ctx, &sm, sopsv1alpha1.ConditionDecrypted, "KeyResolveFailed", err.Error())
 	}
 	plaintext, err := decrypt.DecryptAge(content, sm.Spec.Source.Path, ageKey)
 	if err != nil {
+		setStage(StageDecrypt)
 		return r.failManifestStatus(ctx, &sm, sopsv1alpha1.ConditionDecrypted, "DecryptFailed", err.Error())
 	}
 
 	// Parse decrypted manifest into a Secret, enforcing the whitelist.
 	parsed, err := transform.ParseManifest(plaintext)
 	if err != nil {
+		setStage(StageDecrypt)
 		return r.failManifestStatus(ctx, &sm, sopsv1alpha1.ConditionDecrypted, "ParseFailed", err.Error())
 	}
 	transform.NormalizeSecretData(parsed)
@@ -131,6 +139,7 @@ func (r *SopsSecretManifestReconciler) Reconcile(ctx context.Context, req ctrl.R
 		targetName = parsed.Name
 	}
 	if targetName == "" {
+		setStage(StageDecrypt)
 		return r.failManifestStatus(ctx, &sm, sopsv1alpha1.ConditionDecrypted, "NameMissing",
 			"manifest has no metadata.name and target.nameOverride is not set")
 	}
@@ -139,6 +148,7 @@ func (r *SopsSecretManifestReconciler) Reconcile(ctx context.Context, req ctrl.R
 	hash := transform.HashManifestSecret(parsed)
 	if err := r.applyManifestSecret(ctx, &sm, parsed, targetName, targetNS, hash, commitSHA); err != nil {
 		log.Error(err, "apply manifest secret failed")
+		setStage(StageApply)
 		return r.failManifestStatus(ctx, &sm, sopsv1alpha1.ConditionApplied, "ApplyFailed", err.Error())
 	}
 	setCondition(&sm.Status.Conditions, sopsv1alpha1.ConditionApplied, metav1.ConditionTrue, "Applied",

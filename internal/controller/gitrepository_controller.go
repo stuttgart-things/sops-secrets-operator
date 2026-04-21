@@ -62,6 +62,8 @@ type GitRepositoryReconciler struct {
 
 func (r *GitRepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithValues("gitrepository", req.NamespacedName)
+	setStage, finish := trackReconcile("GitRepository")
+	defer finish()
 
 	var gr sopsv1alpha1.GitRepository
 	if err := r.Get(ctx, req.NamespacedName, &gr); err != nil {
@@ -80,6 +82,7 @@ func (r *GitRepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	auth, err := r.resolveAuth(ctx, &gr)
 	if err != nil {
 		log.Error(err, "auth resolution failed")
+		setStage(StageAuth)
 		setCondition(&gr.Status.Conditions, sopsv1alpha1.ConditionAuthResolved, metav1.ConditionFalse, "AuthFailed", err.Error())
 		setCondition(&gr.Status.Conditions, sopsv1alpha1.ConditionSourceReady, metav1.ConditionFalse, "AuthFailed", "waiting for auth")
 		gr.Status.CacheReady = false
@@ -99,6 +102,7 @@ func (r *GitRepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	sha, err := r.Registry.EnsureCached(ctx, req.NamespacedName, cfg)
 	if err != nil {
 		log.Error(err, "fetch failed")
+		setStage(StageFetch)
 		setCondition(&gr.Status.Conditions, sopsv1alpha1.ConditionSourceReady, metav1.ConditionFalse, "FetchFailed", err.Error())
 		gr.Status.CacheReady = false
 		if uerr := r.Status().Update(ctx, &gr); uerr != nil {

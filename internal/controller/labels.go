@@ -10,6 +10,42 @@ You may obtain a copy of the License at
 
 package controller
 
+import (
+	"time"
+
+	"github.com/stuttgart-things/sops-secrets-operator/internal/metrics"
+)
+
+// Reconcile stage labels used on the sops_reconcile_errors_total counter.
+const (
+	StageAuth    = "auth"
+	StageFetch   = "fetch"
+	StageDecrypt = "decrypt"
+	StageApply   = "apply"
+)
+
+// trackReconcile is called at the top of each Reconcile and returns a
+// setter for the error stage plus a deferred finisher. Usage:
+//
+//	setStage, finish := trackReconcile("GitRepository")
+//	defer finish()
+//	// on failure path:
+//	setStage(StageAuth)
+//	return r.failStatus(...)
+func trackReconcile(kind string) (setStage func(string), finish func()) {
+	start := time.Now()
+	var stage string
+	return func(s string) { stage = s }, func() {
+			result := metrics.ResultSuccess
+			if stage != "" {
+				result = metrics.ResultError
+				metrics.ReconcileErrorsTotal.WithLabelValues(kind, stage).Inc()
+			}
+			metrics.ReconcileTotal.WithLabelValues(kind, result).Inc()
+			metrics.ReconcileDurationSeconds.WithLabelValues(kind, result).Observe(time.Since(start).Seconds())
+		}
+}
+
 // Labels and annotations set on every target Secret produced by this operator.
 // They mark ownership (for adoption checks and finalizer cleanup) and carry
 // the source-commit / content-hash needed for drift detection.

@@ -55,6 +55,8 @@ type SopsSecretReconciler struct {
 
 func (r *SopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithValues("sopssecret", req.NamespacedName)
+	setStage, finish := trackReconcile("SopsSecret")
+	defer finish()
 
 	var ss sopsv1alpha1.SopsSecret
 	if err := r.Get(ctx, req.NamespacedName, &ss); err != nil {
@@ -91,9 +93,11 @@ func (r *SopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if apierrors.IsNotFound(err) {
 			msg = fmt.Sprintf("GitRepository %q not found", ss.Spec.Source.RepositoryRef.Name)
 		}
+		setStage(StageFetch)
 		return r.failStatus(ctx, &ss, sopsv1alpha1.ConditionSourceReady, "SourceMissing", msg)
 	}
 	if !isSourceReady(&repo) {
+		setStage(StageFetch)
 		return r.failStatus(ctx, &ss, sopsv1alpha1.ConditionSourceReady, "SourceNotReady",
 			fmt.Sprintf("GitRepository %q is not ready", repo.Name))
 	}
@@ -102,26 +106,31 @@ func (r *SopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Read encrypted file from the cached repo.
 	content, commitSHA, err := r.Registry.Read(repoKey, ss.Spec.Source.Path)
 	if err != nil {
+		setStage(StageFetch)
 		return r.failStatus(ctx, &ss, sopsv1alpha1.ConditionSourceReady, "ReadFailed", err.Error())
 	}
 
 	// Resolve age key and decrypt.
 	ageKey, err := keyresolve.Age(ctx, r.Client, ss.Namespace, ss.Spec.Decryption.KeyRef)
 	if err != nil {
+		setStage(StageDecrypt)
 		return r.failStatus(ctx, &ss, sopsv1alpha1.ConditionDecrypted, "KeyResolveFailed", err.Error())
 	}
 	plaintext, err := decrypt.DecryptAge(content, ss.Spec.Source.Path, ageKey)
 	if err != nil {
+		setStage(StageDecrypt)
 		return r.failStatus(ctx, &ss, sopsv1alpha1.ConditionDecrypted, "DecryptFailed", err.Error())
 	}
 
 	// Parse flat YAML, enforce flat-only guard, apply mapping.
 	flat, err := transform.ParseFlatYAML(plaintext)
 	if err != nil {
+		setStage(StageDecrypt)
 		return r.failStatus(ctx, &ss, sopsv1alpha1.ConditionDecrypted, "ParseFailed", err.Error())
 	}
 	data, err := transform.ApplyMapping(flat, ss.Spec.Data)
 	if err != nil {
+		setStage(StageDecrypt)
 		return r.failStatus(ctx, &ss, sopsv1alpha1.ConditionDecrypted, "MappingFailed", err.Error())
 	}
 	setCondition(&ss.Status.Conditions, sopsv1alpha1.ConditionDecrypted, metav1.ConditionTrue, "Decrypted", "decryption + mapping ok")
@@ -130,6 +139,7 @@ func (r *SopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	hash := transform.HashSecretData(data)
 	if err := r.applyTargetSecret(ctx, &ss, data, hash, commitSHA); err != nil {
 		log.Error(err, "apply target secret failed")
+		setStage(StageApply)
 		return r.failStatus(ctx, &ss, sopsv1alpha1.ConditionApplied, "ApplyFailed", err.Error())
 	}
 	setCondition(&ss.Status.Conditions, sopsv1alpha1.ConditionApplied, metav1.ConditionTrue, "Applied",

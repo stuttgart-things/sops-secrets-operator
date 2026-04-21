@@ -17,15 +17,27 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	sopsdecrypt "github.com/getsops/sops/v3/decrypt"
+
+	"github.com/stuttgart-things/sops-secrets-operator/internal/metrics"
 )
 
 var ageKeyMu sync.Mutex
 
 // DecryptAge decrypts SOPS-encrypted data using the provided age private key.
 // The file path is used only to infer the SOPS format (yaml/json/dotenv/binary).
-func DecryptAge(content []byte, filePath string, ageKey []byte) ([]byte, error) {
+func DecryptAge(content []byte, filePath string, ageKey []byte) (_ []byte, retErr error) {
+	start := time.Now()
+	defer func() {
+		result := metrics.ResultSuccess
+		if retErr != nil {
+			result = metrics.ResultError
+		}
+		metrics.SopsDecryptDurationSeconds.WithLabelValues(result).Observe(time.Since(start).Seconds())
+	}()
+
 	if len(content) == 0 {
 		return nil, errors.New("decrypt: content is empty")
 	}
