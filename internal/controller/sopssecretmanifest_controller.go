@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -193,17 +194,13 @@ func (r *SopsSecretManifestReconciler) applyManifestSecret(
 		if out.Labels == nil {
 			out.Labels = map[string]string{}
 		}
-		for k, v := range parsed.Labels {
-			out.Labels[k] = v
-		}
+		maps.Copy(out.Labels, parsed.Labels)
 		out.Labels[ManagedByLabel] = ManagedByValue
 
 		if out.Annotations == nil {
 			out.Annotations = map[string]string{}
 		}
-		for k, v := range parsed.Annotations {
-			out.Annotations[k] = v
-		}
+		maps.Copy(out.Annotations, parsed.Annotations)
 		out.Annotations[OwnerAnnotation] = ownerKey
 		out.Annotations[OwnerUIDAnnotation] = string(sm.UID)
 		out.Annotations[ContentHashAnnotation] = hash

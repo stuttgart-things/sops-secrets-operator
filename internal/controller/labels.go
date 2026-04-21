@@ -36,14 +36,14 @@ func trackReconcile(kind string) (setStage func(string), finish func()) {
 	start := time.Now()
 	var stage string
 	return func(s string) { stage = s }, func() {
-			result := metrics.ResultSuccess
-			if stage != "" {
-				result = metrics.ResultError
-				metrics.ReconcileErrorsTotal.WithLabelValues(kind, stage).Inc()
-			}
-			metrics.ReconcileTotal.WithLabelValues(kind, result).Inc()
-			metrics.ReconcileDurationSeconds.WithLabelValues(kind, result).Observe(time.Since(start).Seconds())
+		result := metrics.ResultSuccess
+		if stage != "" {
+			result = metrics.ResultError
+			metrics.ReconcileErrorsTotal.WithLabelValues(kind, stage).Inc()
 		}
+		metrics.ReconcileTotal.WithLabelValues(kind, result).Inc()
+		metrics.ReconcileDurationSeconds.WithLabelValues(kind, result).Observe(time.Since(start).Seconds())
+	}
 }
 
 // Labels and annotations set on every target Secret produced by this operator.
