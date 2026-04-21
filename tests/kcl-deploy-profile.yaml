@@ -1,0 +1,4 @@
+config.image: ghcr.io/stuttgart-things/sops-secrets-operator:latest
+config.namespace: sops-secrets-operator-system
+config.replicas: 1
+config.imagePullPolicy: IfNotPresent

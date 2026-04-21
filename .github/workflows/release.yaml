@@ -1,0 +1,140 @@
+---
+name: Release
+on:
+  workflow_run:
+    workflows: ["CI - Build & Test"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment: k8s
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
+
+      - name: Get version before release
+        id: version-before
+        run: |
+          git fetch --tags
+          BEFORE=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "none")
+          echo "version=$BEFORE" >> $GITHUB_OUTPUT
+
+      - name: Semantic release
+        uses: dagger/dagger-for-github@v8.4.1
+        with:
+          version: "0.20.0"
+          verb: call
+          module: github.com/stuttgart-things/dagger/release@v0.86.0
+          args: >-
+            semantic
+            --src .
+            --token env:GITHUB_TOKEN
+            --dry-run-only=false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get new version
+        id: version-after
+        run: |
+          git fetch --tags
+          AFTER=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "none")
+          echo "version=$AFTER" >> $GITHUB_OUTPUT
+          if [ "$AFTER" != "${{ steps.version-before.outputs.version }}" ] && [ "$AFTER" != "none" ]; then
+            echo "new_release=true" >> $GITHUB_OUTPUT
+            echo "New release: $AFTER"
+          else
+            echo "new_release=false" >> $GITHUB_OUTPUT
+            echo "No new release"
+          fi
+
+      - name: Login to GHCR
+        if: steps.version-after.outputs.new_release == 'true'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build and push versioned image to GHCR
+        if: steps.version-after.outputs.new_release == 'true'
+        run: |
+          VERSION="${{ steps.version-after.outputs.version }}"
+          docker build \
+            -f cluster/images/sops-secrets-operator/Dockerfile \
+            -t ghcr.io/${{ github.repository }}:${VERSION} \
+            -t ghcr.io/${{ github.repository }}:latest \
+            .
+          docker push ghcr.io/${{ github.repository }}:${VERSION}
+          docker push ghcr.io/${{ github.repository }}:latest
+
+      - name: Sync CRDs into kcl/crds and stage release KCL profile
+        if: steps.version-after.outputs.new_release == 'true'
+        run: |
+          VERSION="${{ steps.version-after.outputs.version }}"
+          # Re-copy the generated CRDs so the kustomize bundle tagged at
+          # VERSION always matches the current schema.
+          cp config/crd/bases/sops.stuttgart-things.com_*.yaml kcl/crds/
+          mkdir -p /tmp/release
+          cp tests/kcl-deploy-profile.yaml /tmp/release/profile.yaml
+          # Pin the image tag in the shipped profile so consumers who
+          # `kubectl apply -k` on a tagged bundle render config.image
+          # at VERSION and actually roll over.
+          sed -i "s|^config.image:.*|config.image: ghcr.io/${{ github.repository }}:${VERSION}|" /tmp/release/profile.yaml
+          echo "--- staged profile ---"
+          cat /tmp/release/profile.yaml
+
+      - name: Push kustomize base
+        if: steps.version-after.outputs.new_release == 'true'
+        uses: dagger/dagger-for-github@v8.4.1
+        with:
+          version: "0.20.0"
+          verb: call
+          module: github.com/stuttgart-things/dagger/kcl@v0.86.0
+          args: >-
+            push-kustomize-base
+            --source ./kcl
+            --parameters-file /tmp/release/profile.yaml
+            --address ghcr.io/stuttgart-things/sops-secrets-operator-kustomize
+            --tag ${{ steps.version-after.outputs.version }}
+            --user env:GITHUB_USER
+            --password env:GITHUB_TOKEN
+        env:
+          GITHUB_USER: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update release notes
+        if: steps.version-after.outputs.new_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version-after.outputs.version }}"
+          EXISTING_BODY=$(gh release view "$VERSION" --json body --jq '.body')
+          ARTIFACTS="### Artifacts\n\n| Artifact | Reference |\n|----------|-----------|"
+          ARTIFACTS="${ARTIFACTS}\n| **Image** | \`ghcr.io/${{ github.repository }}:${VERSION}\` |"
+          ARTIFACTS="${ARTIFACTS}\n| **Kustomize** | \`ghcr.io/stuttgart-things/sops-secrets-operator-kustomize:${VERSION}\` |"
+          gh release edit "$VERSION" --notes "$(printf '%s\n\n%b' "$EXISTING_BODY" "$ARTIFACTS")"
+
+      - name: Release summary
+        run: |
+          if [ "${{ steps.version-after.outputs.new_release }}" == "true" ]; then
+            VERSION="${{ steps.version-after.outputs.version }}"
+            echo "## Release $VERSION" >> $GITHUB_STEP_SUMMARY
+            echo "| Artifact | Reference |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|-----------|" >> $GITHUB_STEP_SUMMARY
+            echo "| **Image** | \`ghcr.io/${{ github.repository }}:$VERSION\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Kustomize** | \`ghcr.io/stuttgart-things/sops-secrets-operator-kustomize:$VERSION\` |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## No Release" >> $GITHUB_STEP_SUMMARY
+            echo "No new version created by semantic-release." >> $GITHUB_STEP_SUMMARY
+          fi
