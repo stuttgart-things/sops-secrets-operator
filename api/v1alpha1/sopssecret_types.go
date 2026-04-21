@@ -17,70 +17,128 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+// SourceRef identifies a file in a GitRepository.
+type SourceRef struct {
+	// +kubebuilder:validation:Required
+	RepositoryRef LocalObjectReference `json:"repositoryRef"`
 
-// SopsSecretSpec defines the desired state of SopsSecret
-type SopsSecretSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
-
-	// foo is an example field of SopsSecret. Edit sopssecret_types.go to remove/update
-	// +optional
-	Foo *string `json:"foo,omitempty"`
+	// Path within the repository.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Path string `json:"path"`
 }
 
-// SopsSecretStatus defines the observed state of SopsSecret.
+// DecryptionSpec configures how the source file is decrypted.
+type DecryptionSpec struct {
+	// +kubebuilder:validation:Required
+	KeyRef SecretKeyRef `json:"keyRef"`
+}
+
+// MappingTarget describes the target k8s Secret for a SopsSecret.
+type MappingTarget struct {
+	// Defaults to metadata.name.
+	// +optional
+	Name string `json:"name,omitempty"`
+
+	// Defaults to metadata.namespace.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// Defaults to Opaque.
+	// +optional
+	Type corev1.SecretType `json:"type,omitempty"`
+
+	// When true, adopt a pre-existing Secret that is not already
+	// managed by this operator. Defaults to false (refuse).
+	// +optional
+	Adopt bool `json:"adopt,omitempty"`
+}
+
+// DataMapping maps one key in the decrypted flat YAML to one key in the
+// target Secret's data.
+type DataMapping struct {
+	// Key is the target k8s Secret data key.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Key string `json:"key"`
+
+	// From is the top-level key in the decrypted flat YAML file.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	From string `json:"from"`
+}
+
+// SopsSecretSpec describes a mapping from a SOPS-encrypted flat key/value
+// YAML file into a k8s Secret.
+type SopsSecretSpec struct {
+	// +kubebuilder:validation:Required
+	Source SourceRef `json:"source"`
+
+	// +kubebuilder:validation:Required
+	Decryption DecryptionSpec `json:"decryption"`
+
+	// +optional
+	Target MappingTarget `json:"target,omitempty"`
+
+	// +kubebuilder:validation:MinItems=1
+	Data []DataMapping `json:"data"`
+}
+
+// SopsSecretStatus is the observed state of the SopsSecret.
 type SopsSecretStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// LastAppliedHash is the SHA-256 of the most recently applied target
+	// Secret data (deterministic over the key-sorted key/value pairs).
+	// +optional
+	LastAppliedHash string `json:"lastAppliedHash,omitempty"`
 
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
+	// LastSyncedCommit is the source repository commit at the last apply.
+	// +optional
+	LastSyncedCommit string `json:"lastSyncedCommit,omitempty"`
 
-	// conditions represent the current state of the SopsSecret resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
+	// ObservedGeneration reflects the generation most recently reconciled.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
 	// +listType=map
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
+// Condition types used by SopsSecret and SopsSecretManifest.
+const (
+	ConditionDecrypted = "Decrypted"
+	ConditionApplied   = "Applied"
+)
+
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Source",type=string,JSONPath=".spec.source.repositoryRef.name"
+// +kubebuilder:printcolumn:name="Path",type=string,JSONPath=".spec.source.path"
+// +kubebuilder:printcolumn:name="Applied",type=string,JSONPath=".status.conditions[?(@.type==\"Applied\")].status"
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 
-// SopsSecret is the Schema for the sopssecrets API
+// SopsSecret decrypts a SOPS-encrypted flat key/value file from a GitRepository
+// and maps selected keys into a target Kubernetes Secret.
 type SopsSecret struct {
 	metav1.TypeMeta `json:",inline"`
-
-	// metadata is a standard object metadata
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitzero"`
 
-	// spec defines the desired state of SopsSecret
 	// +required
 	Spec SopsSecretSpec `json:"spec"`
 
-	// status defines the observed state of SopsSecret
 	// +optional
 	Status SopsSecretStatus `json:"status,omitzero"`
 }
 
 // +kubebuilder:object:root=true
 
-// SopsSecretList contains a list of SopsSecret
+// SopsSecretList contains a list of SopsSecret.
 type SopsSecretList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`
