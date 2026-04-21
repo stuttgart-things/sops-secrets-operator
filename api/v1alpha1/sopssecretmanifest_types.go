@@ -20,38 +20,56 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
-// SopsSecretManifestSpec defines the desired state of SopsSecretManifest
-type SopsSecretManifestSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
-
-	// foo is an example field of SopsSecretManifest. Edit sopssecretmanifest_types.go to remove/update
+// ManifestTarget describes how to materialize a decrypted Secret manifest.
+//
+// Namespace is authoritative: whatever appears in the decrypted file's
+// metadata.namespace is ignored and replaced with this value (or the
+// CR's own namespace if this is empty). This prevents a git-repo writer
+// from implying write access to arbitrary cluster namespaces.
+type ManifestTarget struct {
+	// Defaults to metadata.namespace of the CR.
 	// +optional
-	Foo *string `json:"foo,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+
+	// NameOverride replaces the name from the decrypted manifest.
+	// When empty, the manifest's metadata.name is used.
+	// +optional
+	NameOverride string `json:"nameOverride,omitempty"`
+
+	// When true, adopt a pre-existing Secret that is not already
+	// managed by this operator. Defaults to false (refuse).
+	// +optional
+	Adopt bool `json:"adopt,omitempty"`
 }
 
-// SopsSecretManifestStatus defines the observed state of SopsSecretManifest.
+// SopsSecretManifestSpec describes a SOPS-encrypted k8s Secret manifest
+// whose decrypted content should be applied as-is (pass-through mode).
+type SopsSecretManifestSpec struct {
+	// +kubebuilder:validation:Required
+	Source SourceRef `json:"source"`
+
+	// +kubebuilder:validation:Required
+	Decryption DecryptionSpec `json:"decryption"`
+
+	// +optional
+	Target ManifestTarget `json:"target,omitempty"`
+}
+
+// SopsSecretManifestStatus is the observed state of the SopsSecretManifest.
 type SopsSecretManifestStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// LastAppliedHash is the SHA-256 of the most recently applied target
+	// Secret (type + data/stringData).
+	// +optional
+	LastAppliedHash string `json:"lastAppliedHash,omitempty"`
 
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
+	// LastSyncedCommit is the source repository commit at the last apply.
+	// +optional
+	LastSyncedCommit string `json:"lastSyncedCommit,omitempty"`
 
-	// conditions represent the current state of the SopsSecretManifest resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
+	// ObservedGeneration reflects the generation most recently reconciled.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
 	// +listType=map
 	// +listMapKey=type
 	// +optional
@@ -60,27 +78,28 @@ type SopsSecretManifestStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Source",type=string,JSONPath=".spec.source.repositoryRef.name"
+// +kubebuilder:printcolumn:name="Path",type=string,JSONPath=".spec.source.path"
+// +kubebuilder:printcolumn:name="Applied",type=string,JSONPath=".status.conditions[?(@.type==\"Applied\")].status"
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 
-// SopsSecretManifest is the Schema for the sopssecretmanifests API
+// SopsSecretManifest decrypts a SOPS-encrypted Kubernetes Secret manifest
+// from a GitRepository and applies it to the cluster.
 type SopsSecretManifest struct {
 	metav1.TypeMeta `json:",inline"`
-
-	// metadata is a standard object metadata
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitzero"`
 
-	// spec defines the desired state of SopsSecretManifest
 	// +required
 	Spec SopsSecretManifestSpec `json:"spec"`
 
-	// status defines the observed state of SopsSecretManifest
 	// +optional
 	Status SopsSecretManifestStatus `json:"status,omitzero"`
 }
 
 // +kubebuilder:object:root=true
 
-// SopsSecretManifestList contains a list of SopsSecretManifest
+// SopsSecretManifestList contains a list of SopsSecretManifest.
 type SopsSecretManifestList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`

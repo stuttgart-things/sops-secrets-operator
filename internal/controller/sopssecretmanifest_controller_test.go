@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	sopsv1alpha1 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha1"
+	"github.com/stuttgart-things/sops-secrets-operator/internal/source"
 )
 
 var _ = Describe("SopsSecretManifest Controller", func() {
@@ -51,7 +52,15 @@ var _ = Describe("SopsSecretManifest Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: sopsv1alpha1.SopsSecretManifestSpec{
+						Source: sopsv1alpha1.SourceRef{
+							RepositoryRef: sopsv1alpha1.LocalObjectReference{Name: "does-not-exist"},
+							Path:          "secret.enc.yaml",
+						},
+						Decryption: sopsv1alpha1.DecryptionSpec{
+							KeyRef: sopsv1alpha1.SecretKeyRef{Name: "age-key", Key: "age.agekey"},
+						},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
@@ -69,8 +78,9 @@ var _ = Describe("SopsSecretManifest Controller", func() {
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
 			controllerReconciler := &SopsSecretManifestReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
+				Registry: source.NewRegistry(),
 			}
 
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
