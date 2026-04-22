@@ -7,6 +7,9 @@
 bin/*
 Dockerfile.cross
 
+# go-task cache
+.task/
+
 # Test binary, built with `go test -c`
 *.test
 
