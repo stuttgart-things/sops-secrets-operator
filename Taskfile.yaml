@@ -1,0 +1,44 @@
+version: "3"
+
+# Task runner for ad-hoc developer flows that don't belong in the
+# kubebuilder-scaffolded Makefile. The Makefile still owns the core
+# build / test / lint / manifest-generation targets; tasks here wrap
+# auxiliary workflows like rendering the KCL deployment bundle.
+
+tasks:
+  default:
+    desc: List available tasks.
+    cmds:
+      - task --list
+    silent: true
+
+  kcl:sync-crds:
+    desc: Copy generated CRDs into kcl/crds/ so the KCL bundle stays in sync with config/crd/bases.
+    deps: [_kcl:ensure-manifests]
+    sources:
+      - config/crd/bases/sops.stuttgart-things.com_*.yaml
+    generates:
+      - kcl/crds/sops.stuttgart-things.com_*.yaml
+    cmds:
+      - cp config/crd/bases/sops.stuttgart-things.com_*.yaml kcl/crds/
+
+  kcl:render:
+    desc: Render the KCL deployment bundle to multi-doc YAML at bin/kcl-rendered.yaml.
+    deps: [kcl:sync-crds]
+    preconditions:
+      - sh: command -v kcl
+        msg: "kcl is not installed; see https://kcl-lang.io"
+      - sh: command -v yq
+        msg: "yq is required to split KCL output into multi-doc YAML"
+    cmds:
+      - mkdir -p bin
+      - 'cd kcl && kcl run main.k -Y ../tests/kcl-deploy-profile.yaml | yq eval ''.manifests[] | split_doc'' - > "{{.ROOT_DIR}}/bin/kcl-rendered.yaml"'
+      - echo "--- rendered manifests in bin/kcl-rendered.yaml ---"
+      - 'yq eval ''.apiVersion + "/" + .kind + " " + .metadata.name'' "{{.ROOT_DIR}}/bin/kcl-rendered.yaml"'
+
+  _kcl:ensure-manifests:
+    # Delegate to the Makefile target so CRDs exist before syncing.
+    # Kept internal (leading underscore) since it's an implementation detail.
+    internal: true
+    cmds:
+      - make manifests
