@@ -5,6 +5,7 @@ resources:
 - bases/sops.stuttgart-things.com_gitrepositories.yaml
 - bases/sops.stuttgart-things.com_sopssecrets.yaml
 - bases/sops.stuttgart-things.com_sopssecretmanifests.yaml
+- bases/sops.stuttgart-things.com_inlinesopssecrets.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

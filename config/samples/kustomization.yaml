@@ -3,4 +3,5 @@ resources:
 - sops_v1alpha1_gitrepository.yaml
 - sops_v1alpha1_sopssecret.yaml
 - sops_v1alpha1_sopssecretmanifest.yaml
+- sops_v1alpha1_inlinesopssecret.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

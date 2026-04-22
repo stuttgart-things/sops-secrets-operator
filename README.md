@@ -16,7 +16,7 @@ No delivery tool required.
 
 ## Architecture
 
-Three CRDs, all in API group `sops.stuttgart-things.com/v1alpha1`:
+Four CRDs, all in API group `sops.stuttgart-things.com/v1alpha1`:
 
 ```
 ┌──────────────────┐       ┌──────────────────────┐      ┌──────────────┐
@@ -28,13 +28,19 @@ Three CRDs, all in API group `sops.stuttgart-things.com/v1alpha1`:
          └─────────────────│  SopsSecretManifest  │─────►│  Secret      │
                            │  (passthrough)       │      │              │
                            └──────────────────────┘      └──────────────┘
+
+                           ┌──────────────────────┐      ┌──────────────┐
+                           │  InlineSopsSecret    │─────►│  Secret      │
+                           │  (inline payload)    │      │              │
+                           └──────────────────────┘      └──────────────┘
 ```
 
 - **`GitRepository`** — connection to a Git repo: URL, branch or pinned revision, poll interval, and either HTTP basic or SSH auth.
-- **`SopsSecret`** — **mapping mode**: source file is a SOPS-encrypted flat key/value YAML. `spec.data[]` explicitly picks source keys and renames them into target Secret `data` keys. Unknown keys in the file are dropped; missing declared keys fail-closed.
-- **`SopsSecretManifest`** — **pass-through mode**: source file *is* a SOPS-encrypted `kind: Secret` manifest. The decrypted manifest is applied directly, but namespace is overridden authoritatively by the CR.
+- **`SopsSecret`** — **mapping mode, git-sourced**: source file is a SOPS-encrypted flat key/value YAML. `spec.data[]` explicitly picks source keys and renames them into target Secret `data` keys. Unknown keys in the file are dropped; missing declared keys fail-closed.
+- **`SopsSecretManifest`** — **pass-through mode, git-sourced**: source file *is* a SOPS-encrypted `kind: Secret` manifest. The decrypted manifest is applied directly, but namespace is overridden authoritatively by the CR.
+- **`InlineSopsSecret`** — **no git**: the SOPS-encrypted payload lives inside the CR (`spec.encryptedYAML`). The same Mapping / Manifest semantics via `spec.mode`. Access control is RBAC on the CR itself — anyone who can `create inlinesopssecrets` in a namespace can decrypt anything the operator has keys for.
 
-Both secret CRDs share a single `GitRepository` cache entry, so one repo fed to many secrets is one clone on disk.
+Both git-sourced CRDs share a single `GitRepository` cache entry, so one repo fed to many secrets is one clone on disk.
 
 ## Quick start
 
@@ -157,6 +163,15 @@ Use when your SOPS file *is* an encrypted `kind: Secret` manifest (typically wit
 - Namespace override is authoritative — the CR decides where the Secret lands, not the decrypted file.
 - `target.nameOverride` optionally replaces `metadata.name` from the manifest.
 
+### `InlineSopsSecret` — inline payload, no git
+
+Use when you want to apply encrypted secrets without a git repo: ad-hoc/one-off secrets, air-gapped or GitOps-free clusters, or when RBAC on the CR *is* your delivery control.
+
+- `spec.mode: Mapping` — decrypted YAML is flat key/value, same contract as `SopsSecret`; `spec.data[]` required.
+- `spec.mode: Manifest` — decrypted YAML is a `kind: Secret`, same whitelist and namespace-authoritative rules as `SopsSecretManifest`.
+- `spec.encryptedYAML` holds the literal output of `sops --encrypt`. The SOPS MAC is validated, so preserve the string byte-for-byte.
+- Caveats: encrypted blob lives in etcd (CR size ~1 MB); anyone with `create inlinesopssecrets` in a namespace can decrypt anything the operator has keys for. See [SECURITY.md](./SECURITY.md).
+
 ## Operator observability
 
 The manager exposes Prometheus metrics at `/metrics`:
@@ -172,6 +187,7 @@ The manager exposes Prometheus metrics at `/metrics`:
 Each CR has status conditions you can watch with `kubectl get -o jsonpath='{.status.conditions}'`:
 - `GitRepository`: `AuthResolved`, `SourceReady`
 - `SopsSecret` / `SopsSecretManifest`: `SourceReady`, `Decrypted`, `Applied`
+- `InlineSopsSecret`: `Decrypted`, `Applied`
 
 ## Samples
 
@@ -180,6 +196,7 @@ Runnable examples in [`config/samples/`](./config/samples):
 - [`sops_v1alpha1_gitrepository.yaml`](./config/samples/sops_v1alpha1_gitrepository.yaml) — HTTP basic + SSH auth variants
 - [`sops_v1alpha1_sopssecret.yaml`](./config/samples/sops_v1alpha1_sopssecret.yaml) — mapping mode
 - [`sops_v1alpha1_sopssecretmanifest.yaml`](./config/samples/sops_v1alpha1_sopssecretmanifest.yaml) — pass-through mode
+- [`sops_v1alpha1_inlinesopssecret.yaml`](./config/samples/sops_v1alpha1_inlinesopssecret.yaml) — inline payload, both Mapping and Manifest modes
 
 ## Security model
 
