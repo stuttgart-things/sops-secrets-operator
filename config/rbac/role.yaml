@@ -20,6 +20,7 @@ rules:
   - sops.stuttgart-things.com
   resources:
   - gitrepositories
+  - inlinesopssecrets
   - sopssecretmanifests
   - sopssecrets
   verbs:
@@ -34,6 +35,7 @@ rules:
   - sops.stuttgart-things.com
   resources:
   - gitrepositories/finalizers
+  - inlinesopssecrets/finalizers
   - sopssecretmanifests/finalizers
   - sopssecrets/finalizers
   verbs:
@@ -42,6 +44,7 @@ rules:
   - sops.stuttgart-things.com
   resources:
   - gitrepositories/status
+  - inlinesopssecrets/status
   - sopssecretmanifests/status
   - sopssecrets/status
   verbs:

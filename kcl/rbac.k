@@ -2,7 +2,8 @@
 ClusterRole + ClusterRoleBinding for sops-secrets-operator.
 
 The operator needs to:
-- watch/update GitRepository, SopsSecret, SopsSecretManifest CRs (namespaced)
+- watch/update GitRepository, SopsSecret, SopsSecretManifest, InlineSopsSecret
+  CRs (namespaced)
 - read + write Secrets across namespaces (auth tokens, age keys,
   target Secrets — potentially cross-namespace via target.namespace)
 - emit Events
@@ -21,7 +22,7 @@ clusterRole = {
     rules: [
         {
             apiGroups: ["sops.stuttgart-things.com"]
-            resources: ["gitrepositories", "sopssecrets", "sopssecretmanifests"]
+            resources: ["gitrepositories", "sopssecrets", "sopssecretmanifests", "inlinesopssecrets"]
             verbs: ["get", "list", "watch", "update", "patch"]
         }
         {
@@ -30,6 +31,7 @@ clusterRole = {
                 "gitrepositories/status"
                 "sopssecrets/status"
                 "sopssecretmanifests/status"
+                "inlinesopssecrets/status"
             ]
             verbs: ["get", "update", "patch"]
         }
@@ -39,6 +41,7 @@ clusterRole = {
                 "gitrepositories/finalizers"
                 "sopssecrets/finalizers"
                 "sopssecretmanifests/finalizers"
+                "inlinesopssecrets/finalizers"
             ]
             verbs: ["update"]
         }
