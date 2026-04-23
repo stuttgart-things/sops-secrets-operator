@@ -166,6 +166,141 @@ var _ = Describe("Git-sourced happy paths (envtest)", func() {
 			Expect(string(target.Data["API_TOKEN"])).To(Equal("xyz"))
 		})
 
+		It("refuses a pre-existing un-owned Secret, then adopts it when target.adopt=true", func() {
+			prefix := uniq("ss-adopt")
+			plain := []byte("db_user: alice\ndb_password: s3cret\n")
+			fx := newGitFixture(prefix, "adopt.enc.yaml", plain)
+
+			// Pre-existing Secret not managed by this operator.
+			pre := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        prefix,
+					Namespace:   namespace,
+					Labels:      map[string]string{"app": "legacy"},
+					Annotations: map[string]string{"note": "hand-crafted"},
+				},
+				Data: map[string][]byte{
+					"DB_USER":     []byte("stale-user"),
+					"LEGACY_ONLY": []byte("keep-me"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, pre)).To(Succeed())
+
+			cr := &sopsv1alpha1.SopsSecret{
+				ObjectMeta: metav1.ObjectMeta{Name: prefix, Namespace: namespace},
+				Spec: sopsv1alpha1.SopsSecretSpec{
+					Source: sopsv1alpha1.SourceRef{
+						RepositoryRef: sopsv1alpha1.LocalObjectReference{Name: fx.repoCRRef},
+						Path:          "adopt.enc.yaml",
+					},
+					Decryption: sopsv1alpha1.DecryptionSpec{
+						KeyRef: sopsv1alpha1.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
+					},
+					Data: []sopsv1alpha1.DataMapping{
+						{Key: "DB_USER", From: "db_user"},
+						{Key: "DB_PASSWORD", From: "db_password"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cr)).To(Succeed())
+
+			reconr := &SopsSecretReconciler{
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
+				Registry: fx.registry,
+			}
+			// Finalizer add + actual reconcile. Adoption must be refused.
+			for range 2 {
+				_, err := reconr.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Namespace: namespace, Name: prefix},
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Pre-existing Secret must be untouched — no ManagedBy label, original data intact.
+			got := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: prefix}, got)).To(Succeed())
+			Expect(got.Labels).NotTo(HaveKey(ManagedByLabel))
+			Expect(got.Annotations).NotTo(HaveKey(OwnerAnnotation))
+			Expect(string(got.Data["DB_USER"])).To(Equal("stale-user"))
+			Expect(got.Data).To(HaveKey("LEGACY_ONLY"))
+
+			// CR must report Applied=False with reason ApplyFailed.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: prefix}, cr)).To(Succeed())
+			applied := conditionByType(cr.Status.Conditions, sopsv1alpha1.ConditionApplied)
+			Expect(applied).NotTo(BeNil())
+			Expect(applied.Status).To(Equal(metav1.ConditionFalse))
+			Expect(applied.Reason).To(Equal("ApplyFailed"))
+
+			// Flip adopt=true and re-reconcile.
+			cr.Spec.Target.Adopt = true
+			Expect(k8sClient.Update(ctx, cr)).To(Succeed())
+
+			_, err := reconr.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: namespace, Name: prefix},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: prefix}, got)).To(Succeed())
+			Expect(got.Labels[ManagedByLabel]).To(Equal(ManagedByValue))
+			Expect(got.Annotations[OwnerAnnotation]).To(Equal(fmt.Sprintf("SopsSecret/%s/%s", namespace, prefix)))
+			Expect(got.Annotations[ContentHashAnnotation]).NotTo(BeEmpty())
+			Expect(string(got.Data["DB_USER"])).To(Equal("alice"))
+			Expect(string(got.Data["DB_PASSWORD"])).To(Equal("s3cret"))
+			// Data is authoritative after adoption — the legacy key is dropped.
+			Expect(got.Data).NotTo(HaveKey("LEGACY_ONLY"))
+		})
+
+		It("reverts drift when the target Secret is edited out of band", func() {
+			prefix := uniq("ss-drift")
+			plain := []byte("token: correct-horse\n")
+			fx := newGitFixture(prefix, "drift.enc.yaml", plain)
+
+			cr := &sopsv1alpha1.SopsSecret{
+				ObjectMeta: metav1.ObjectMeta{Name: prefix, Namespace: namespace},
+				Spec: sopsv1alpha1.SopsSecretSpec{
+					Source: sopsv1alpha1.SourceRef{
+						RepositoryRef: sopsv1alpha1.LocalObjectReference{Name: fx.repoCRRef},
+						Path:          "drift.enc.yaml",
+					},
+					Decryption: sopsv1alpha1.DecryptionSpec{
+						KeyRef: sopsv1alpha1.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
+					},
+					Data: []sopsv1alpha1.DataMapping{{Key: "TOKEN", From: "token"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cr)).To(Succeed())
+
+			reconr := &SopsSecretReconciler{
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
+				Registry: fx.registry,
+			}
+			for range 2 {
+				_, err := reconr.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Namespace: namespace, Name: prefix},
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			target := &corev1.Secret{}
+			key := types.NamespacedName{Namespace: namespace, Name: prefix}
+			Expect(k8sClient.Get(ctx, key, target)).To(Succeed())
+			Expect(string(target.Data["TOKEN"])).To(Equal("correct-horse"))
+
+			// Out-of-band drift: overwrite TOKEN and add a rogue key.
+			target.Data["TOKEN"] = []byte("tampered")
+			target.Data["ROGUE"] = []byte("injected")
+			Expect(k8sClient.Update(ctx, target)).To(Succeed())
+
+			_, err := reconr.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, key, target)).To(Succeed())
+			Expect(string(target.Data["TOKEN"])).To(Equal("correct-horse"))
+			Expect(target.Data).NotTo(HaveKey("ROGUE"))
+		})
+
 		It("deletes the target Secret when the CR is deleted (finalizer)", func() {
 			prefix := uniq("ss-fin")
 			fx := newGitFixture(prefix, "c.enc.yaml", []byte("x: 1\n"))
