@@ -6,15 +6,9 @@ you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
     http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
 */
 
-package v1alpha1
+package v1alpha2
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,13 +24,6 @@ const (
 )
 
 // GitAuth configures authentication to the remote repository.
-//
-// For "basic" the referenced Secret must carry `username` and `password`
-// keys (password may be a personal access token).
-//
-// For "ssh" the referenced Secret must carry `privateKey` and `knownHosts`,
-// and may optionally carry `passphrase` and `user`. Strict host-key
-// checking is enforced; `knownHosts` is required.
 type GitAuth struct {
 	// +kubebuilder:validation:Required
 	Type GitAuthType `json:"type"`
@@ -69,15 +56,12 @@ type GitRepositorySpec struct {
 
 // GitRepositoryStatus is the observed state of the GitRepository.
 type GitRepositoryStatus struct {
-	// LastSyncedCommit is the commit SHA at the last successful reconcile.
 	// +optional
 	LastSyncedCommit string `json:"lastSyncedCommit,omitempty"`
 
-	// CacheReady is true when the local cache matches the configured ref.
 	// +optional
 	CacheReady bool `json:"cacheReady,omitempty"`
 
-	// ObservedGeneration reflects the generation most recently reconciled.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
@@ -95,7 +79,6 @@ const (
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:storageversion
 // +kubebuilder:printcolumn:name="URL",type=string,JSONPath=".spec.url"
 // +kubebuilder:printcolumn:name="Commit",type=string,JSONPath=".status.lastSyncedCommit"
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.conditions[?(@.type==\"SourceReady\")].status"
@@ -122,6 +105,10 @@ type GitRepositoryList struct {
 	metav1.ListMeta `json:"metadata,omitzero"`
 	Items           []GitRepository `json:"items"`
 }
+
+// Hub marks GitRepository v1alpha2 as the conversion hub. v1alpha1
+// converts to/from this type; any future v1alphaN will do the same.
+func (*GitRepository) Hub() {}
 
 func init() {
 	SchemeBuilder.Register(&GitRepository{}, &GitRepositoryList{})

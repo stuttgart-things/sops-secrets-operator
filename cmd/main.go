@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	sopsv1alpha1 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha1"
+	sopsv1alpha2 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha2"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/controller"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/source"
 	// +kubebuilder:scaffold:imports
@@ -50,6 +51,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(sopsv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(sopsv1alpha2.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
