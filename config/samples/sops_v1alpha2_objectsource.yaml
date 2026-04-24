@@ -1,0 +1,57 @@
+---
+# ObjectSource (HTTPS mode): a single SOPS-encrypted file reachable by URL.
+# When the URL is public, omit spec.auth entirely; set `type: none` if you
+# want to make the choice explicit.
+apiVersion: sops.stuttgart-things.com/v1alpha2
+kind: ObjectSource
+metadata:
+  name: shared-secrets-https
+  namespace: apps
+spec:
+  url: https://minio.internal/sops/shared.enc.yaml
+  interval: 5m
+  auth:
+    type: bearer
+    secretRef:
+      name: minio-bearer
+---
+# The Secret referenced above. Key must be `token`.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-bearer
+  namespace: apps
+type: Opaque
+stringData:
+  token: paste-token-here
+---
+# ObjectSource (S3 mode): an S3-compatible bucket. The object key lives
+# on the consumer's spec.source.path, not here. The controller only
+# validates auth + bucket reachability on reconcile.
+apiVersion: sops.stuttgart-things.com/v1alpha2
+kind: ObjectSource
+metadata:
+  name: shared-secrets-s3
+  namespace: apps
+spec:
+  bucket:
+    endpoint: s3.amazonaws.com
+    name: platform-secrets
+    region: eu-central-1
+    # Set insecure: true for http-only MinIO / dev clusters.
+  interval: 5m
+  auth:
+    type: s3
+    secretRef:
+      name: s3-creds
+---
+# S3 access-key Secret. Keys must be `accessKey` and `secretKey`.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: s3-creds
+  namespace: apps
+type: Opaque
+stringData:
+  accessKey: AKIAIOSFODNN7EXAMPLE
+  secretKey: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY

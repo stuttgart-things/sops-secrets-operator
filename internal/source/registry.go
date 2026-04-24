@@ -21,10 +21,13 @@ import (
 	"github.com/stuttgart-things/sops-secrets-operator/internal/metrics"
 )
 
-// Registry coordinates repo caches across reconcilers.
+// Registry coordinates source caches across reconcilers. It holds both
+// git caches (keyed by GitRepository key) and object caches (keyed by
+// ObjectSource key), guarded by a single top-level mutex.
 type Registry struct {
 	mu      sync.Mutex
 	entries map[client.ObjectKey]*entry
+	objects map[client.ObjectKey]*objectEntry
 }
 
 type entry struct {
@@ -36,7 +39,10 @@ type entry struct {
 
 // NewRegistry returns an empty Registry.
 func NewRegistry() *Registry {
-	return &Registry{entries: make(map[client.ObjectKey]*entry)}
+	return &Registry{
+		entries: make(map[client.ObjectKey]*entry),
+		objects: make(map[client.ObjectKey]*objectEntry),
+	}
 }
 
 // EnsureCached updates the cache for the GitRepository identified by key
