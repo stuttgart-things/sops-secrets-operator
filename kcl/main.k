@@ -20,6 +20,7 @@ _crdFiles = [
     _mod + "/crds/sops.stuttgart-things.com_sopssecrets.yaml"
     _mod + "/crds/sops.stuttgart-things.com_sopssecretmanifests.yaml"
     _mod + "/crds/sops.stuttgart-things.com_inlinesopssecrets.yaml"
+    _mod + "/crds/sops.stuttgart-things.com_objectsources.yaml"
 ]
 _crds = [yaml.decode(file.read(f)) for f in _crdFiles]
 

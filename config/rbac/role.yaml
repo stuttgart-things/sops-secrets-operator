@@ -21,6 +21,7 @@ rules:
   resources:
   - gitrepositories
   - inlinesopssecrets
+  - objectsources
   - sopssecretmanifests
   - sopssecrets
   verbs:
@@ -36,6 +37,7 @@ rules:
   resources:
   - gitrepositories/finalizers
   - inlinesopssecrets/finalizers
+  - objectsources/finalizers
   - sopssecretmanifests/finalizers
   - sopssecrets/finalizers
   verbs:
@@ -45,6 +47,7 @@ rules:
   resources:
   - gitrepositories/status
   - inlinesopssecrets/status
+  - objectsources/status
   - sopssecretmanifests/status
   - sopssecrets/status
   verbs:

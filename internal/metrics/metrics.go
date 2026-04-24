@@ -58,6 +58,19 @@ var (
 	)
 )
 
+// Object-source metrics. Populated by the source Registry around
+// EnsureObjectCached (HTTPS GET / HEAD or S3 StatObject+GetObject / BucketExists).
+var (
+	ObjectFetchDurationSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "sops_object_fetch_duration_seconds",
+			Help:    "Time spent fetching or probing an ObjectSource on a cache refresh.",
+			Buckets: prometheus.ExponentialBuckets(0.01, 2, 12), // 10ms .. ~40s
+		},
+		[]string{"result"},
+	)
+)
+
 // SOPS decrypt metrics. Populated by the decrypt package.
 var (
 	SopsDecryptDurationSeconds = prometheus.NewHistogramVec(
@@ -76,6 +89,7 @@ func init() {
 		ReconcileErrorsTotal,
 		ReconcileDurationSeconds,
 		GitFetchDurationSeconds,
+		ObjectFetchDurationSeconds,
 		SopsDecryptDurationSeconds,
 	)
 }
