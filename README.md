@@ -16,7 +16,7 @@ No delivery tool required.
 
 ## Architecture
 
-Four CRDs, all in API group `sops.stuttgart-things.com/v1alpha1`:
+Four CRDs in API group `sops.stuttgart-things.com/v1alpha1`, plus `ObjectSource` under `sops.stuttgart-things.com/v1alpha2` (experimental — the controller fetches and caches, but consumer dispatch via `sourceRef` is not wired yet; see #26):
 
 ```
 ┌──────────────────┐       ┌──────────────────────┐      ┌──────────────┐
@@ -36,6 +36,7 @@ Four CRDs, all in API group `sops.stuttgart-things.com/v1alpha1`:
 ```
 
 - **`GitRepository`** — connection to a Git repo: URL, branch or pinned revision, poll interval, and either HTTP basic or SSH auth.
+- **`ObjectSource` (v1alpha2, experimental)** — connection to an HTTPS URL or S3-compatible bucket (MinIO / Ceph / R2 / AWS S3). HTTPS mode caches the object via `ETag` / `If-None-Match`; bucket mode probes reachability and auth. Not yet selectable as a `SopsSecret` / `SopsSecretManifest` source — that wiring lands in #26.
 - **`SopsSecret`** — **mapping mode, git-sourced**: source file is a SOPS-encrypted flat key/value YAML. `spec.data[]` explicitly picks source keys and renames them into target Secret `data` keys. Unknown keys in the file are dropped; missing declared keys fail-closed.
 - **`SopsSecretManifest`** — **pass-through mode, git-sourced**: source file *is* a SOPS-encrypted `kind: Secret` manifest. The decrypted manifest is applied directly, but namespace is overridden authoritatively by the CR.
 - **`InlineSopsSecret`** — **no git**: the SOPS-encrypted payload lives inside the CR (`spec.encryptedYAML`). The same Mapping / Manifest semantics via `spec.mode`. Access control is RBAC on the CR itself — anyone who can `create inlinesopssecrets` in a namespace can decrypt anything the operator has keys for.
@@ -182,10 +183,11 @@ The manager exposes Prometheus metrics at `/metrics`:
 | `sops_reconcile_errors_total` | counter | `kind`, `stage` (auth / fetch / decrypt / apply) |
 | `sops_reconcile_duration_seconds` | histogram | `kind`, `result` |
 | `sops_git_fetch_duration_seconds` | histogram | `result` |
+| `sops_object_fetch_duration_seconds` | histogram | `result` |
 | `sops_decrypt_duration_seconds` | histogram | `result` |
 
 Each CR has status conditions you can watch with `kubectl get -o jsonpath='{.status.conditions}'`:
-- `GitRepository`: `AuthResolved`, `SourceReady`
+- `GitRepository` / `ObjectSource`: `AuthResolved`, `SourceReady`
 - `SopsSecret` / `SopsSecretManifest`: `SourceReady`, `Decrypted`, `Applied`
 - `InlineSopsSecret`: `Decrypted`, `Applied`
 
@@ -197,6 +199,7 @@ Runnable examples in [`config/samples/`](./config/samples):
 - [`sops_v1alpha1_sopssecret.yaml`](./config/samples/sops_v1alpha1_sopssecret.yaml) — mapping mode
 - [`sops_v1alpha1_sopssecretmanifest.yaml`](./config/samples/sops_v1alpha1_sopssecretmanifest.yaml) — pass-through mode
 - [`sops_v1alpha1_inlinesopssecret.yaml`](./config/samples/sops_v1alpha1_inlinesopssecret.yaml) — inline payload, both Mapping and Manifest modes
+- [`sops_v1alpha2_objectsource.yaml`](./config/samples/sops_v1alpha2_objectsource.yaml) — HTTPS-bearer and S3 variants (experimental; see #26 for consumer wiring)
 
 ## Security model
 
@@ -222,7 +225,8 @@ The controllers are scaffolded with [kubebuilder v4](https://book.kubebuilder.io
 
 - `internal/git/` — go-git wrapper with revision pinning + safe cache directory
 - `internal/decrypt/` — age-only SOPS decrypt with in-process serialization
-- `internal/source/` — per-repo cache registry shared across reconcilers
+- `internal/source/` — cache registry shared across reconcilers (git + object sources)
+- `internal/object/` — HTTPS (`If-None-Match`/ETag) and S3-compatible (minio-go) fetchers for `ObjectSource`
 - `internal/transform/` — pure helpers (flat-YAML parsing, manifest validation, content hashing)
 - `internal/keyresolve/` — age key lookup from Secret refs
 - `internal/controller/` — the three reconcilers
