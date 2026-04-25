@@ -73,6 +73,14 @@ func (r *ObjectSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 
+	// Force-sync: a changed reconcile-requested annotation drops the cached
+	// content (and ETag) so the next EnsureObjectCached call performs an
+	// unconditional GET regardless of upstream If-None-Match semantics.
+	reqToken := os.Annotations[ReconcileRequestAnnotation]
+	if reqToken != "" && reqToken != os.Status.LastProcessedReconcileToken {
+		r.Registry.ForgetObject(req.NamespacedName)
+	}
+
 	// Validate spec oneOf. The CRD OpenAPI validation already blocks this
 	// at admission time, but keep a defensive check for in-cluster edits
 	// that could bypass validation (e.g. legacy clients).
@@ -116,6 +124,7 @@ func (r *ObjectSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	os.Status.LastSyncedETag = etag
 	os.Status.LastSyncedAt = &now
 	os.Status.CacheReady = true
+	os.Status.LastProcessedReconcileToken = reqToken
 	os.Status.ObservedGeneration = os.Generation
 
 	msg := "cache ready"

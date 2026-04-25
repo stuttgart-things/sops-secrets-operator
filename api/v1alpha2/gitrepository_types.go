@@ -63,6 +63,9 @@ type GitRepositoryStatus struct {
 	CacheReady bool `json:"cacheReady,omitempty"`
 
 	// +optional
+	LastProcessedReconcileToken string `json:"lastProcessedReconcileToken,omitempty"`
+
+	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// +listType=map

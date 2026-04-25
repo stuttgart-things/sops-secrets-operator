@@ -88,6 +88,13 @@ type SopsSecretStatus struct {
 	// +optional
 	LastSyncedCommit string `json:"lastSyncedCommit,omitempty"`
 
+	// LastProcessedReconcileToken is the value of the
+	// sops.stuttgart-things.com/reconcile-requested annotation that was last
+	// honored by the reconciler. When the live annotation differs, the next
+	// reconcile re-runs the full pipeline regardless of cache state.
+	// +optional
+	LastProcessedReconcileToken string `json:"lastProcessedReconcileToken,omitempty"`
+
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
@@ -105,6 +112,7 @@ const (
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:storageversion
 // +kubebuilder:printcolumn:name="Source",type=string,JSONPath=".spec.source.sourceRef.name"
 // +kubebuilder:printcolumn:name="Kind",type=string,JSONPath=".spec.source.sourceRef.kind"
 // +kubebuilder:printcolumn:name="Path",type=string,JSONPath=".spec.source.path"

@@ -10,11 +10,16 @@ resources:
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
-# [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix.
-# patches here are for enabling the conversion webhook for each CRD
+# Conversion-webhook patches: SopsSecret and SopsSecretManifest changed shape
+# between v1alpha1 (RepositoryRef) and v1alpha2 (SourceRef), so they need
+# webhook-strategy conversion. GitRepository / InlineSopsSecret / ObjectSource
+# do not (single-version or isomorphic schemas) and stay on the default
+# strategy ("None").
+- path: patches/webhook_in_sopssecrets.yaml
+- path: patches/webhook_in_sopssecretmanifests.yaml
 # +kubebuilder:scaffold:crdkustomizewebhookpatch
 
-# [WEBHOOK] To enable webhook, uncomment the following section
-# the following config is for teaching kustomize how to do kustomization for CRDs.
-#configurations:
-#- kustomizeconfig.yaml
+# Teaches kustomize that the conversion webhook clientConfig.service.name
+# is a Service reference, so namePrefix from config/default flows in.
+configurations:
+- kustomizeconfig.yaml

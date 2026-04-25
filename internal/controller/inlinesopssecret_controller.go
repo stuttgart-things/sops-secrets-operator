@@ -82,7 +82,10 @@ func (r *InlineSopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	// Resolve age key and decrypt the inline payload.
-	ageKey, err := keyresolve.Age(ctx, r.Client, is.Namespace, is.Spec.Decryption.KeyRef)
+	ageKey, err := keyresolve.Age(ctx, r.Client, is.Namespace, keyresolve.SecretKeyRef{
+		Name: is.Spec.Decryption.KeyRef.Name,
+		Key:  is.Spec.Decryption.KeyRef.Key,
+	})
 	if err != nil {
 		setStage(StageDecrypt)
 		return r.failInlineStatus(ctx, &is, sopsv1alpha1.ConditionDecrypted, "KeyResolveFailed", err.Error())
@@ -101,7 +104,7 @@ func (r *InlineSopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			setStage(StageDecrypt)
 			return r.failInlineStatus(ctx, &is, sopsv1alpha1.ConditionDecrypted, "ParseFailed", err.Error())
 		}
-		data, err := transform.ApplyMapping(flat, is.Spec.Data)
+		data, err := transform.ApplyMapping(flat, convertInlineDataMappings(is.Spec.Data))
 		if err != nil {
 			setStage(StageDecrypt)
 			return r.failInlineStatus(ctx, &is, sopsv1alpha1.ConditionDecrypted, "MappingFailed", err.Error())
@@ -157,11 +160,23 @@ func (r *InlineSopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			fmt.Sprintf("unknown mode %q", is.Spec.Mode))
 	}
 
+	is.Status.LastProcessedReconcileToken = is.Annotations[ReconcileRequestAnnotation]
 	is.Status.ObservedGeneration = is.Generation
 	if err := r.Status().Update(ctx, &is); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
+}
+
+func convertInlineDataMappings(in []sopsv1alpha1.DataMapping) []transform.DataMapping {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]transform.DataMapping, len(in))
+	for i, m := range in {
+		out[i] = transform.DataMapping{Key: m.Key, From: m.From}
+	}
+	return out
 }
 
 func (r *InlineSopsSecretReconciler) applyInlineMappingSecret(ctx context.Context, is *sopsv1alpha1.InlineSopsSecret, data map[string][]byte, hash string) error {

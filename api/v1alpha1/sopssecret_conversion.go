@@ -47,10 +47,11 @@ func (src *SopsSecret) ConvertTo(dstRaw conversion.Hub) error {
 		Data: convertDataMappingsTo(src.Spec.Data),
 	}
 	dst.Status = v1alpha2.SopsSecretStatus{
-		LastAppliedHash:    src.Status.LastAppliedHash,
-		LastSyncedCommit:   src.Status.LastSyncedCommit,
-		ObservedGeneration: src.Status.ObservedGeneration,
-		Conditions:         src.Status.Conditions,
+		LastAppliedHash:             src.Status.LastAppliedHash,
+		LastSyncedCommit:            src.Status.LastSyncedCommit,
+		LastProcessedReconcileToken: src.Status.LastProcessedReconcileToken,
+		ObservedGeneration:          src.Status.ObservedGeneration,
+		Conditions:                  src.Status.Conditions,
 	}
 	return nil
 }
@@ -86,10 +87,11 @@ func (dst *SopsSecret) ConvertFrom(srcRaw conversion.Hub) error {
 		Data: convertDataMappingsFrom(src.Spec.Data),
 	}
 	dst.Status = SopsSecretStatus{
-		LastAppliedHash:    src.Status.LastAppliedHash,
-		LastSyncedCommit:   src.Status.LastSyncedCommit,
-		ObservedGeneration: src.Status.ObservedGeneration,
-		Conditions:         src.Status.Conditions,
+		LastAppliedHash:             src.Status.LastAppliedHash,
+		LastSyncedCommit:            src.Status.LastSyncedCommit,
+		LastProcessedReconcileToken: src.Status.LastProcessedReconcileToken,
+		ObservedGeneration:          src.Status.ObservedGeneration,
+		Conditions:                  src.Status.Conditions,
 	}
 	return nil
 }

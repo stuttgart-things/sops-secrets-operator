@@ -168,6 +168,12 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              lastProcessedReconcileToken:
+                description: |-
+                  LastProcessedReconcileToken records the last value of the
+                  sops.stuttgart-things.com/reconcile-requested annotation that the
+                  reconciler honored (cache eviction + forced fetch).
+                type: string
               lastSyncedCommit:
                 description: LastSyncedCommit is the commit SHA at the last successful
                   reconcile.
@@ -329,6 +335,8 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              lastProcessedReconcileToken:
+                type: string
               lastSyncedCommit:
                 type: string
               observedGeneration:

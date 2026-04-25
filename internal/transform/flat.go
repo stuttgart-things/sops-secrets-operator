@@ -12,9 +12,15 @@ import (
 	"strconv"
 
 	"sigs.k8s.io/yaml"
-
-	sopsv1alpha1 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha1"
 )
+
+// DataMapping is the neutral representation of a (target Secret key, source
+// flat-YAML key) pair. Decoupled from any API version's Go type so this
+// package does not import the api/ tree.
+type DataMapping struct {
+	Key  string
+	From string
+}
 
 // ParseFlatYAML unmarshals plaintext as a top-level map of scalars.
 // Returns an error if any top-level value is not a scalar — this is the
@@ -65,7 +71,7 @@ func scalarToString(v any) (string, error) {
 
 // ApplyMapping selects and renames keys according to the CR's Data slice.
 // Fails closed when any mapped source key is missing.
-func ApplyMapping(source map[string]string, mappings []sopsv1alpha1.DataMapping) (map[string][]byte, error) {
+func ApplyMapping(source map[string]string, mappings []DataMapping) (map[string][]byte, error) {
 	out := make(map[string][]byte, len(mappings))
 	for _, m := range mappings {
 		val, ok := source[m.From]

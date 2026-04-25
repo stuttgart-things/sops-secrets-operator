@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	sopsv1alpha1 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha1"
+	sopsv1alpha2 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha2"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/source"
 )
 
@@ -40,23 +41,26 @@ var _ = Describe("SopsSecret Controller", func() {
 		uniqueName = func(prefix string) string { return fmt.Sprintf("%s-%d", prefix, counter) }
 	})
 
-	makeCR := func(name, repoRef string) *sopsv1alpha1.SopsSecret {
-		return &sopsv1alpha1.SopsSecret{
+	makeCR := func(name, repoRef string) *sopsv1alpha2.SopsSecret {
+		return &sopsv1alpha2.SopsSecret{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-			Spec: sopsv1alpha1.SopsSecretSpec{
-				Source: sopsv1alpha1.SourceRef{
-					RepositoryRef: sopsv1alpha1.LocalObjectReference{Name: repoRef},
-					Path:          "secrets.enc.yaml",
+			Spec: sopsv1alpha2.SopsSecretSpec{
+				Source: sopsv1alpha2.SourceRef{
+					SourceRef: sopsv1alpha2.SourceKindRef{
+						Kind: sopsv1alpha2.SourceKindGitRepository,
+						Name: repoRef,
+					},
+					Path: "secrets.enc.yaml",
 				},
-				Decryption: sopsv1alpha1.DecryptionSpec{
-					KeyRef: sopsv1alpha1.SecretKeyRef{Name: "age-key", Key: "age.agekey"},
+				Decryption: sopsv1alpha2.DecryptionSpec{
+					KeyRef: sopsv1alpha2.SecretKeyRef{Name: "age-key", Key: "age.agekey"},
 				},
-				Data: []sopsv1alpha1.DataMapping{{Key: "DB_PASSWORD", From: "db_password"}},
+				Data: []sopsv1alpha2.DataMapping{{Key: "DB_PASSWORD", From: "db_password"}},
 			},
 		}
 	}
 
-	reconcileOnce := func(name string) *sopsv1alpha1.SopsSecret {
+	reconcileOnce := func(name string) *sopsv1alpha2.SopsSecret {
 		r := &SopsSecretReconciler{
 			Client:   k8sClient,
 			Scheme:   k8sClient.Scheme(),
@@ -67,12 +71,12 @@ var _ = Describe("SopsSecret Controller", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		out := &sopsv1alpha1.SopsSecret{}
+		out := &sopsv1alpha2.SopsSecret{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, out)).To(Succeed())
 		return out
 	}
 
-	condition := func(ss *sopsv1alpha1.SopsSecret, t string) *metav1.Condition {
+	condition := func(ss *sopsv1alpha2.SopsSecret, t string) *metav1.Condition {
 		for i := range ss.Status.Conditions {
 			if ss.Status.Conditions[i].Type == t {
 				return &ss.Status.Conditions[i]
@@ -94,7 +98,7 @@ var _ = Describe("SopsSecret Controller", func() {
 				NamespacedName: types.NamespacedName{Namespace: namespace, Name: name},
 			})
 
-			got := &sopsv1alpha1.SopsSecret{}
+			got := &sopsv1alpha2.SopsSecret{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, got)).To(Succeed())
 			Expect(got.Finalizers).To(ContainElement(Finalizer))
 
@@ -107,12 +111,10 @@ var _ = Describe("SopsSecret Controller", func() {
 			name := uniqueName("ss-no-repo")
 			Expect(k8sClient.Create(ctx, makeCR(name, "missing-repo"))).To(Succeed())
 
-			// First reconcile adds finalizer and requeues.
 			_ = reconcileOnce(name)
-			// Second reconcile reaches the source-resolution path.
 			got := reconcileOnce(name)
 
-			c := condition(got, sopsv1alpha1.ConditionSourceReady)
+			c := condition(got, sopsv1alpha2.ConditionSourceReady)
 			Expect(c).NotTo(BeNil())
 			Expect(c.Status).To(Equal(metav1.ConditionFalse))
 			Expect(c.Reason).To(Equal("SourceMissing"))
@@ -124,7 +126,6 @@ var _ = Describe("SopsSecret Controller", func() {
 			name := uniqueName("ss-repo-not-ready")
 			repoName := name + "-repo"
 
-			// Create a GitRepository CR without setting SourceReady=True.
 			Expect(k8sClient.Create(ctx, &sopsv1alpha1.GitRepository{
 				ObjectMeta: metav1.ObjectMeta{Name: repoName, Namespace: namespace},
 				Spec:       sopsv1alpha1.GitRepositorySpec{URL: "https://example.invalid/repo.git"},
@@ -134,7 +135,7 @@ var _ = Describe("SopsSecret Controller", func() {
 			_ = reconcileOnce(name)
 			got := reconcileOnce(name)
 
-			c := condition(got, sopsv1alpha1.ConditionSourceReady)
+			c := condition(got, sopsv1alpha2.ConditionSourceReady)
 			Expect(c).NotTo(BeNil())
 			Expect(c.Status).To(Equal(metav1.ConditionFalse))
 			Expect(c.Reason).To(Equal("SourceNotReady"))
@@ -144,17 +145,20 @@ var _ = Describe("SopsSecret Controller", func() {
 	Context("CRD schema validation", func() {
 		It("rejects a SopsSecret with empty data slice", func() {
 			name := uniqueName("ss-bad-schema")
-			bad := &sopsv1alpha1.SopsSecret{
+			bad := &sopsv1alpha2.SopsSecret{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-				Spec: sopsv1alpha1.SopsSecretSpec{
-					Source: sopsv1alpha1.SourceRef{
-						RepositoryRef: sopsv1alpha1.LocalObjectReference{Name: "r"},
-						Path:          "x.yaml",
+				Spec: sopsv1alpha2.SopsSecretSpec{
+					Source: sopsv1alpha2.SourceRef{
+						SourceRef: sopsv1alpha2.SourceKindRef{
+							Kind: sopsv1alpha2.SourceKindGitRepository,
+							Name: "r",
+						},
+						Path: "x.yaml",
 					},
-					Decryption: sopsv1alpha1.DecryptionSpec{
-						KeyRef: sopsv1alpha1.SecretKeyRef{Name: "k", Key: "age"},
+					Decryption: sopsv1alpha2.DecryptionSpec{
+						KeyRef: sopsv1alpha2.SecretKeyRef{Name: "k", Key: "age"},
 					},
-					Data: []sopsv1alpha1.DataMapping{},
+					Data: []sopsv1alpha2.DataMapping{},
 				},
 			}
 			err := k8sClient.Create(ctx, bad)

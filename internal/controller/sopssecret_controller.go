@@ -32,14 +32,20 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	sopsv1alpha1 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha1"
+	sopsv1alpha2 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha2"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/decrypt"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/keyresolve"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/source"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/transform"
 )
 
-// SopsSecretRepoRefIndex is a field index on SopsSecret.spec.source.repositoryRef.name.
-const SopsSecretRepoRefIndex = ".spec.source.repositoryRef.name"
+// Field indexers on SopsSecret. They split GitRepository-backed and
+// ObjectSource-backed CRs so each Watches() can map only the dependents
+// that reference the changed source.
+const (
+	SopsSecretGitRefIndex    = ".spec.source.sourceRef.git.name"
+	SopsSecretObjectRefIndex = ".spec.source.sourceRef.object.name"
+)
 
 // SopsSecretReconciler reconciles SopsSecret objects (mapping mode).
 type SopsSecretReconciler struct {
@@ -58,7 +64,7 @@ func (r *SopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	setStage, finish := trackReconcile("SopsSecret")
 	defer finish()
 
-	var ss sopsv1alpha1.SopsSecret
+	var ss sopsv1alpha2.SopsSecret
 	if err := r.Get(ctx, req.NamespacedName, &ss); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -85,68 +91,53 @@ func (r *SopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, nil
 	}
 
-	// Resolve GitRepository and check it's ready.
-	var repo sopsv1alpha1.GitRepository
-	repoKey := client.ObjectKey{Namespace: ss.Namespace, Name: ss.Spec.Source.RepositoryRef.Name}
-	if err := r.Get(ctx, repoKey, &repo); err != nil {
-		msg := err.Error()
-		if apierrors.IsNotFound(err) {
-			msg = fmt.Sprintf("GitRepository %q not found", ss.Spec.Source.RepositoryRef.Name)
-		}
+	// Resolve the source CR by sourceRef.Kind, fetch the encrypted bytes
+	// plus a "revision" string (commit SHA for git, ETag for object).
+	content, revision, srcErr := r.fetchSource(ctx, &ss)
+	if srcErr != nil {
 		setStage(StageFetch)
-		return r.failStatus(ctx, &ss, sopsv1alpha1.ConditionSourceReady, "SourceMissing", msg)
+		return r.failStatus(ctx, &ss, sopsv1alpha2.ConditionSourceReady, srcErr.reason, srcErr.msg)
 	}
-	if !isSourceReady(&repo) {
-		setStage(StageFetch)
-		return r.failStatus(ctx, &ss, sopsv1alpha1.ConditionSourceReady, "SourceNotReady",
-			fmt.Sprintf("GitRepository %q is not ready", repo.Name))
-	}
-	setCondition(&ss.Status.Conditions, sopsv1alpha1.ConditionSourceReady, metav1.ConditionTrue, "Ready", "source is ready")
+	setCondition(&ss.Status.Conditions, sopsv1alpha2.ConditionSourceReady, metav1.ConditionTrue, "Ready", "source is ready")
 
-	// Read encrypted file from the cached repo.
-	content, commitSHA, err := r.Registry.Read(repoKey, ss.Spec.Source.Path)
-	if err != nil {
-		setStage(StageFetch)
-		return r.failStatus(ctx, &ss, sopsv1alpha1.ConditionSourceReady, "ReadFailed", err.Error())
-	}
-
-	// Resolve age key and decrypt.
-	ageKey, err := keyresolve.Age(ctx, r.Client, ss.Namespace, ss.Spec.Decryption.KeyRef)
+	ageKey, err := keyresolve.Age(ctx, r.Client, ss.Namespace, keyresolve.SecretKeyRef{
+		Name: ss.Spec.Decryption.KeyRef.Name,
+		Key:  ss.Spec.Decryption.KeyRef.Key,
+	})
 	if err != nil {
 		setStage(StageDecrypt)
-		return r.failStatus(ctx, &ss, sopsv1alpha1.ConditionDecrypted, "KeyResolveFailed", err.Error())
+		return r.failStatus(ctx, &ss, sopsv1alpha2.ConditionDecrypted, "KeyResolveFailed", err.Error())
 	}
 	plaintext, err := decrypt.DecryptAge(content, ss.Spec.Source.Path, ageKey)
 	if err != nil {
 		setStage(StageDecrypt)
-		return r.failStatus(ctx, &ss, sopsv1alpha1.ConditionDecrypted, "DecryptFailed", err.Error())
+		return r.failStatus(ctx, &ss, sopsv1alpha2.ConditionDecrypted, "DecryptFailed", err.Error())
 	}
 
-	// Parse flat YAML, enforce flat-only guard, apply mapping.
 	flat, err := transform.ParseFlatYAML(plaintext)
 	if err != nil {
 		setStage(StageDecrypt)
-		return r.failStatus(ctx, &ss, sopsv1alpha1.ConditionDecrypted, "ParseFailed", err.Error())
+		return r.failStatus(ctx, &ss, sopsv1alpha2.ConditionDecrypted, "ParseFailed", err.Error())
 	}
-	data, err := transform.ApplyMapping(flat, ss.Spec.Data)
+	data, err := transform.ApplyMapping(flat, convertSpecDataMappings(ss.Spec.Data))
 	if err != nil {
 		setStage(StageDecrypt)
-		return r.failStatus(ctx, &ss, sopsv1alpha1.ConditionDecrypted, "MappingFailed", err.Error())
+		return r.failStatus(ctx, &ss, sopsv1alpha2.ConditionDecrypted, "MappingFailed", err.Error())
 	}
-	setCondition(&ss.Status.Conditions, sopsv1alpha1.ConditionDecrypted, metav1.ConditionTrue, "Decrypted", "decryption + mapping ok")
+	setCondition(&ss.Status.Conditions, sopsv1alpha2.ConditionDecrypted, metav1.ConditionTrue, "Decrypted", "decryption + mapping ok")
 
-	// Apply target Secret.
 	hash := transform.HashSecretData(data)
-	if err := r.applyTargetSecret(ctx, &ss, data, hash, commitSHA); err != nil {
+	if err := r.applyTargetSecret(ctx, &ss, data, hash, revision); err != nil {
 		log.Error(err, "apply target secret failed")
 		setStage(StageApply)
-		return r.failStatus(ctx, &ss, sopsv1alpha1.ConditionApplied, "ApplyFailed", err.Error())
+		return r.failStatus(ctx, &ss, sopsv1alpha2.ConditionApplied, "ApplyFailed", err.Error())
 	}
-	setCondition(&ss.Status.Conditions, sopsv1alpha1.ConditionApplied, metav1.ConditionTrue, "Applied",
+	setCondition(&ss.Status.Conditions, sopsv1alpha2.ConditionApplied, metav1.ConditionTrue, "Applied",
 		fmt.Sprintf("applied %d keys", len(data)))
 
 	ss.Status.LastAppliedHash = hash
-	ss.Status.LastSyncedCommit = commitSHA
+	ss.Status.LastSyncedCommit = revision
+	ss.Status.LastProcessedReconcileToken = ss.Annotations[ReconcileRequestAnnotation]
 	ss.Status.ObservedGeneration = ss.Generation
 	if err := r.Status().Update(ctx, &ss); err != nil {
 		return ctrl.Result{}, err
@@ -154,7 +145,74 @@ func (r *SopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	return ctrl.Result{}, nil
 }
 
-func (r *SopsSecretReconciler) applyTargetSecret(ctx context.Context, ss *sopsv1alpha1.SopsSecret, data map[string][]byte, hash, commitSHA string) error {
+// sourceFetchError carries a stable reason + message for failStatus.
+type sourceFetchError struct {
+	reason string
+	msg    string
+}
+
+func (e *sourceFetchError) Error() string { return e.msg }
+
+// fetchSource resolves spec.source.sourceRef.kind to either a GitRepository
+// or ObjectSource, verifies its readiness, and reads the encrypted file
+// from the Registry. The "revision" is the git commit SHA or object ETag
+// observed at read time.
+//
+// Force-sync at the consumer level (an annotation on the SopsSecret itself)
+// only marks the next reconcile as "honored": every reconcile already runs
+// the full read/decrypt/apply pipeline, so there is nothing to skip. To
+// force a fresh upstream fetch, annotate the source CR — those reconcilers
+// invalidate the cache before EnsureCached / EnsureObjectCached runs again.
+func (r *SopsSecretReconciler) fetchSource(ctx context.Context, ss *sopsv1alpha2.SopsSecret) ([]byte, string, *sourceFetchError) {
+	kind := ss.Spec.Source.SourceRef.Kind
+	name := ss.Spec.Source.SourceRef.Name
+	path := ss.Spec.Source.Path
+	srcKey := client.ObjectKey{Namespace: ss.Namespace, Name: name}
+
+	switch kind {
+	case sopsv1alpha2.SourceKindGitRepository:
+		// Fetch the storage version (v1alpha1) so envtest can run without
+		// a conversion webhook server. v1alpha1 and v1alpha2 GitRepository
+		// schemas are isomorphic, so this is purely a wire-format choice.
+		var repo sopsv1alpha1.GitRepository
+		if err := r.Get(ctx, srcKey, &repo); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil, "", &sourceFetchError{"SourceMissing", fmt.Sprintf("GitRepository %q not found", name)}
+			}
+			return nil, "", &sourceFetchError{"SourceMissing", err.Error()}
+		}
+		if !isGitSourceReady(&repo) {
+			return nil, "", &sourceFetchError{"SourceNotReady", fmt.Sprintf("GitRepository %q is not ready", name)}
+		}
+		content, sha, err := r.Registry.Read(srcKey, path)
+		if err != nil {
+			return nil, "", &sourceFetchError{"ReadFailed", err.Error()}
+		}
+		return content, sha, nil
+
+	case sopsv1alpha2.SourceKindObjectSource:
+		var os sopsv1alpha2.ObjectSource
+		if err := r.Get(ctx, srcKey, &os); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil, "", &sourceFetchError{"SourceMissing", fmt.Sprintf("ObjectSource %q not found", name)}
+			}
+			return nil, "", &sourceFetchError{"SourceMissing", err.Error()}
+		}
+		if !isObjectSourceReady(&os) {
+			return nil, "", &sourceFetchError{"SourceNotReady", fmt.Sprintf("ObjectSource %q is not ready", name)}
+		}
+		content, etag, err := r.Registry.ReadObject(ctx, srcKey, path)
+		if err != nil {
+			return nil, "", &sourceFetchError{"ReadFailed", err.Error()}
+		}
+		return content, etag, nil
+
+	default:
+		return nil, "", &sourceFetchError{"UnknownSourceKind", fmt.Sprintf("unsupported sourceRef.kind %q", kind)}
+	}
+}
+
+func (r *SopsSecretReconciler) applyTargetSecret(ctx context.Context, ss *sopsv1alpha2.SopsSecret, data map[string][]byte, hash, revision string) error {
 	secret := &corev1.Secret{}
 	secret.Name = targetName(ss)
 	secret.Namespace = targetNamespace(ss)
@@ -175,36 +233,32 @@ func (r *SopsSecretReconciler) applyTargetSecret(ctx context.Context, ss *sopsv1
 			}
 		}
 
-		// Labels.
 		if secret.Labels == nil {
 			secret.Labels = map[string]string{}
 		}
 		secret.Labels[ManagedByLabel] = ManagedByValue
 
-		// Annotations.
 		if secret.Annotations == nil {
 			secret.Annotations = map[string]string{}
 		}
 		secret.Annotations[OwnerAnnotation] = ownerKey
 		secret.Annotations[OwnerUIDAnnotation] = string(ss.UID)
 		secret.Annotations[ContentHashAnnotation] = hash
-		secret.Annotations[SourceCommitAnnotation] = commitSHA
+		secret.Annotations[SourceCommitAnnotation] = revision
 
-		// Type.
 		if ss.Spec.Target.Type != "" {
 			secret.Type = ss.Spec.Target.Type
 		} else if secret.Type == "" {
 			secret.Type = corev1.SecretTypeOpaque
 		}
 
-		// Data is authoritative: drop any key not declared in spec.data.
 		secret.Data = data
 		return nil
 	})
 	return err
 }
 
-func (r *SopsSecretReconciler) deleteOwnedSecret(ctx context.Context, ss *sopsv1alpha1.SopsSecret, name, namespace string) error {
+func (r *SopsSecretReconciler) deleteOwnedSecret(ctx context.Context, ss *sopsv1alpha2.SopsSecret, name, namespace string) error {
 	var sec corev1.Secret
 	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &sec); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -213,16 +267,16 @@ func (r *SopsSecretReconciler) deleteOwnedSecret(ctx context.Context, ss *sopsv1
 		return err
 	}
 	if sec.Labels[ManagedByLabel] != ManagedByValue {
-		return nil // not ours; leave it
+		return nil
 	}
 	ownerKey := fmt.Sprintf("SopsSecret/%s/%s", ss.Namespace, ss.Name)
 	if sec.Annotations[OwnerAnnotation] != ownerKey {
-		return nil // managed by this operator, but a different CR owns it
+		return nil
 	}
 	return client.IgnoreNotFound(r.Delete(ctx, &sec))
 }
 
-func (r *SopsSecretReconciler) failStatus(ctx context.Context, ss *sopsv1alpha1.SopsSecret, condType, reason, msg string) (ctrl.Result, error) {
+func (r *SopsSecretReconciler) failStatus(ctx context.Context, ss *sopsv1alpha2.SopsSecret, condType, reason, msg string) (ctrl.Result, error) {
 	setCondition(&ss.Status.Conditions, condType, metav1.ConditionFalse, reason, msg)
 	if err := r.Status().Update(ctx, ss); err != nil {
 		return ctrl.Result{}, err
@@ -230,21 +284,21 @@ func (r *SopsSecretReconciler) failStatus(ctx context.Context, ss *sopsv1alpha1.
 	return ctrl.Result{RequeueAfter: retryAfter}, nil
 }
 
-func targetName(ss *sopsv1alpha1.SopsSecret) string {
+func targetName(ss *sopsv1alpha2.SopsSecret) string {
 	if ss.Spec.Target.Name != "" {
 		return ss.Spec.Target.Name
 	}
 	return ss.Name
 }
 
-func targetNamespace(ss *sopsv1alpha1.SopsSecret) string {
+func targetNamespace(ss *sopsv1alpha2.SopsSecret) string {
 	if ss.Spec.Target.Namespace != "" {
 		return ss.Spec.Target.Namespace
 	}
 	return ss.Namespace
 }
 
-func isSourceReady(repo *sopsv1alpha1.GitRepository) bool {
+func isGitSourceReady(repo *sopsv1alpha1.GitRepository) bool {
 	for _, c := range repo.Status.Conditions {
 		if c.Type == sopsv1alpha1.ConditionSourceReady {
 			return c.Status == metav1.ConditionTrue
@@ -253,31 +307,77 @@ func isSourceReady(repo *sopsv1alpha1.GitRepository) bool {
 	return false
 }
 
+func isObjectSourceReady(os *sopsv1alpha2.ObjectSource) bool {
+	for _, c := range os.Status.Conditions {
+		if c.Type == ObjectConditionSourceReady {
+			return c.Status == metav1.ConditionTrue
+		}
+	}
+	return false
+}
+
+func convertSpecDataMappings(in []sopsv1alpha2.DataMapping) []transform.DataMapping {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]transform.DataMapping, len(in))
+	for i, m := range in {
+		out[i] = transform.DataMapping{Key: m.Key, From: m.From}
+	}
+	return out
+}
+
 func (r *SopsSecretReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
-		&sopsv1alpha1.SopsSecret{},
-		SopsSecretRepoRefIndex,
+		&sopsv1alpha2.SopsSecret{},
+		SopsSecretGitRefIndex,
 		func(obj client.Object) []string {
-			s := obj.(*sopsv1alpha1.SopsSecret)
-			return []string{s.Spec.Source.RepositoryRef.Name}
+			s := obj.(*sopsv1alpha2.SopsSecret)
+			if s.Spec.Source.SourceRef.Kind != sopsv1alpha2.SourceKindGitRepository {
+				return nil
+			}
+			return []string{s.Spec.Source.SourceRef.Name}
+		},
+	); err != nil {
+		return err
+	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&sopsv1alpha2.SopsSecret{},
+		SopsSecretObjectRefIndex,
+		func(obj client.Object) []string {
+			s := obj.(*sopsv1alpha2.SopsSecret)
+			if s.Spec.Source.SourceRef.Kind != sopsv1alpha2.SourceKindObjectSource {
+				return nil
+			}
+			return []string{s.Spec.Source.SourceRef.Name}
 		},
 	); err != nil {
 		return err
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&sopsv1alpha1.SopsSecret{}).
-		Watches(&sopsv1alpha1.GitRepository{}, handler.EnqueueRequestsFromMapFunc(r.mapRepoToSopsSecrets)).
+		For(&sopsv1alpha2.SopsSecret{}).
+		Watches(&sopsv1alpha1.GitRepository{}, handler.EnqueueRequestsFromMapFunc(r.mapGitRepoToSopsSecrets)).
+		Watches(&sopsv1alpha2.ObjectSource{}, handler.EnqueueRequestsFromMapFunc(r.mapObjectSourceToSopsSecrets)).
 		Named("sopssecret").
 		Complete(r)
 }
 
-func (r *SopsSecretReconciler) mapRepoToSopsSecrets(ctx context.Context, obj client.Object) []reconcile.Request {
-	var list sopsv1alpha1.SopsSecretList
+func (r *SopsSecretReconciler) mapGitRepoToSopsSecrets(ctx context.Context, obj client.Object) []reconcile.Request {
+	return r.mapSourceToSopsSecrets(ctx, obj, SopsSecretGitRefIndex)
+}
+
+func (r *SopsSecretReconciler) mapObjectSourceToSopsSecrets(ctx context.Context, obj client.Object) []reconcile.Request {
+	return r.mapSourceToSopsSecrets(ctx, obj, SopsSecretObjectRefIndex)
+}
+
+func (r *SopsSecretReconciler) mapSourceToSopsSecrets(ctx context.Context, obj client.Object, index string) []reconcile.Request {
+	var list sopsv1alpha2.SopsSecretList
 	if err := r.List(ctx, &list,
 		client.InNamespace(obj.GetNamespace()),
-		client.MatchingFields{SopsSecretRepoRefIndex: obj.GetName()},
+		client.MatchingFields{index: obj.GetName()},
 	); err != nil {
 		return nil
 	}

@@ -108,6 +108,12 @@ type InlineSopsSecretStatus struct {
 	// +optional
 	LastAppliedHash string `json:"lastAppliedHash,omitempty"`
 
+	// LastProcessedReconcileToken records the last value of the
+	// sops.stuttgart-things.com/reconcile-requested annotation that the
+	// reconciler honored (forced re-decrypt + re-apply).
+	// +optional
+	LastProcessedReconcileToken string `json:"lastProcessedReconcileToken,omitempty"`
+
 	// ObservedGeneration reflects the generation most recently reconciled.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`

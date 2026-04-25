@@ -191,6 +191,12 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              lastProcessedReconcileToken:
+                description: |-
+                  LastProcessedReconcileToken records the last value of the
+                  sops.stuttgart-things.com/reconcile-requested annotation that the
+                  reconciler honored (cache eviction + unconditional refetch).
+                type: string
               lastSyncedAt:
                 description: LastSyncedAt is the wall-clock time of the last successful
                   reconcile.

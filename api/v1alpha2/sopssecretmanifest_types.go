@@ -51,6 +51,10 @@ type SopsSecretManifestStatus struct {
 	// +optional
 	LastSyncedCommit string `json:"lastSyncedCommit,omitempty"`
 
+	// LastProcessedReconcileToken mirrors SopsSecret's field.
+	// +optional
+	LastProcessedReconcileToken string `json:"lastProcessedReconcileToken,omitempty"`
+
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
@@ -62,6 +66,7 @@ type SopsSecretManifestStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:storageversion
 // +kubebuilder:printcolumn:name="Source",type=string,JSONPath=".spec.source.sourceRef.name"
 // +kubebuilder:printcolumn:name="Kind",type=string,JSONPath=".spec.source.sourceRef.kind"
 // +kubebuilder:printcolumn:name="Path",type=string,JSONPath=".spec.source.path"

@@ -33,15 +33,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	sopsv1alpha1 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha1"
+	sopsv1alpha2 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha2"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/decrypt"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/keyresolve"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/source"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/transform"
 )
 
-// SopsSecretManifestRepoRefIndex is a field index on
-// SopsSecretManifest.spec.source.repositoryRef.name.
-const SopsSecretManifestRepoRefIndex = ".spec.source.repositoryRef.name.manifest"
+const (
+	SopsSecretManifestGitRefIndex    = ".spec.source.sourceRef.git.name.manifest"
+	SopsSecretManifestObjectRefIndex = ".spec.source.sourceRef.object.name.manifest"
+)
 
 // SopsSecretManifestReconciler reconciles SopsSecretManifest objects (pass-through mode).
 type SopsSecretManifestReconciler struct {
@@ -59,7 +61,7 @@ func (r *SopsSecretManifestReconciler) Reconcile(ctx context.Context, req ctrl.R
 	setStage, finish := trackReconcile("SopsSecretManifest")
 	defer finish()
 
-	var sm sopsv1alpha1.SopsSecretManifest
+	var sm sopsv1alpha2.SopsSecretManifest
 	if err := r.Get(ctx, req.NamespacedName, &sm); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -86,51 +88,34 @@ func (r *SopsSecretManifestReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, nil
 	}
 
-	// Source GitRepository must be ready.
-	var repo sopsv1alpha1.GitRepository
-	repoKey := client.ObjectKey{Namespace: sm.Namespace, Name: sm.Spec.Source.RepositoryRef.Name}
-	if err := r.Get(ctx, repoKey, &repo); err != nil {
-		msg := err.Error()
-		if apierrors.IsNotFound(err) {
-			msg = fmt.Sprintf("GitRepository %q not found", sm.Spec.Source.RepositoryRef.Name)
-		}
+	content, revision, srcErr := r.fetchManifestSource(ctx, &sm)
+	if srcErr != nil {
 		setStage(StageFetch)
-		return r.failManifestStatus(ctx, &sm, sopsv1alpha1.ConditionSourceReady, "SourceMissing", msg)
+		return r.failManifestStatus(ctx, &sm, sopsv1alpha2.ConditionSourceReady, srcErr.reason, srcErr.msg)
 	}
-	if !isSourceReady(&repo) {
-		setStage(StageFetch)
-		return r.failManifestStatus(ctx, &sm, sopsv1alpha1.ConditionSourceReady, "SourceNotReady",
-			fmt.Sprintf("GitRepository %q is not ready", repo.Name))
-	}
-	setCondition(&sm.Status.Conditions, sopsv1alpha1.ConditionSourceReady, metav1.ConditionTrue, "Ready", "source is ready")
+	setCondition(&sm.Status.Conditions, sopsv1alpha2.ConditionSourceReady, metav1.ConditionTrue, "Ready", "source is ready")
 
-	// Read + decrypt.
-	content, commitSHA, err := r.Registry.Read(repoKey, sm.Spec.Source.Path)
-	if err != nil {
-		setStage(StageFetch)
-		return r.failManifestStatus(ctx, &sm, sopsv1alpha1.ConditionSourceReady, "ReadFailed", err.Error())
-	}
-	ageKey, err := keyresolve.Age(ctx, r.Client, sm.Namespace, sm.Spec.Decryption.KeyRef)
+	ageKey, err := keyresolve.Age(ctx, r.Client, sm.Namespace, keyresolve.SecretKeyRef{
+		Name: sm.Spec.Decryption.KeyRef.Name,
+		Key:  sm.Spec.Decryption.KeyRef.Key,
+	})
 	if err != nil {
 		setStage(StageDecrypt)
-		return r.failManifestStatus(ctx, &sm, sopsv1alpha1.ConditionDecrypted, "KeyResolveFailed", err.Error())
+		return r.failManifestStatus(ctx, &sm, sopsv1alpha2.ConditionDecrypted, "KeyResolveFailed", err.Error())
 	}
 	plaintext, err := decrypt.DecryptAge(content, sm.Spec.Source.Path, ageKey)
 	if err != nil {
 		setStage(StageDecrypt)
-		return r.failManifestStatus(ctx, &sm, sopsv1alpha1.ConditionDecrypted, "DecryptFailed", err.Error())
+		return r.failManifestStatus(ctx, &sm, sopsv1alpha2.ConditionDecrypted, "DecryptFailed", err.Error())
 	}
 
-	// Parse decrypted manifest into a Secret, enforcing the whitelist.
 	parsed, err := transform.ParseManifest(plaintext)
 	if err != nil {
 		setStage(StageDecrypt)
-		return r.failManifestStatus(ctx, &sm, sopsv1alpha1.ConditionDecrypted, "ParseFailed", err.Error())
+		return r.failManifestStatus(ctx, &sm, sopsv1alpha2.ConditionDecrypted, "ParseFailed", err.Error())
 	}
 	transform.NormalizeSecretData(parsed)
 
-	// Resolve target identity. Namespace is authoritative from the CR;
-	// whatever the manifest claimed is ignored.
 	targetNS := sm.Spec.Target.Namespace
 	if targetNS == "" {
 		targetNS = sm.Namespace
@@ -141,22 +126,23 @@ func (r *SopsSecretManifestReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 	if targetName == "" {
 		setStage(StageDecrypt)
-		return r.failManifestStatus(ctx, &sm, sopsv1alpha1.ConditionDecrypted, "NameMissing",
+		return r.failManifestStatus(ctx, &sm, sopsv1alpha2.ConditionDecrypted, "NameMissing",
 			"manifest has no metadata.name and target.nameOverride is not set")
 	}
-	setCondition(&sm.Status.Conditions, sopsv1alpha1.ConditionDecrypted, metav1.ConditionTrue, "Decrypted", "decryption + validation ok")
+	setCondition(&sm.Status.Conditions, sopsv1alpha2.ConditionDecrypted, metav1.ConditionTrue, "Decrypted", "decryption + validation ok")
 
 	hash := transform.HashManifestSecret(parsed)
-	if err := r.applyManifestSecret(ctx, &sm, parsed, targetName, targetNS, hash, commitSHA); err != nil {
+	if err := r.applyManifestSecret(ctx, &sm, parsed, targetName, targetNS, hash, revision); err != nil {
 		log.Error(err, "apply manifest secret failed")
 		setStage(StageApply)
-		return r.failManifestStatus(ctx, &sm, sopsv1alpha1.ConditionApplied, "ApplyFailed", err.Error())
+		return r.failManifestStatus(ctx, &sm, sopsv1alpha2.ConditionApplied, "ApplyFailed", err.Error())
 	}
-	setCondition(&sm.Status.Conditions, sopsv1alpha1.ConditionApplied, metav1.ConditionTrue, "Applied",
+	setCondition(&sm.Status.Conditions, sopsv1alpha2.ConditionApplied, metav1.ConditionTrue, "Applied",
 		fmt.Sprintf("applied Secret %s/%s", targetNS, targetName))
 
 	sm.Status.LastAppliedHash = hash
-	sm.Status.LastSyncedCommit = commitSHA
+	sm.Status.LastSyncedCommit = revision
+	sm.Status.LastProcessedReconcileToken = sm.Annotations[ReconcileRequestAnnotation]
 	sm.Status.ObservedGeneration = sm.Generation
 	if err := r.Status().Update(ctx, &sm); err != nil {
 		return ctrl.Result{}, err
@@ -164,11 +150,57 @@ func (r *SopsSecretManifestReconciler) Reconcile(ctx context.Context, req ctrl.R
 	return ctrl.Result{}, nil
 }
 
+func (r *SopsSecretManifestReconciler) fetchManifestSource(ctx context.Context, sm *sopsv1alpha2.SopsSecretManifest) ([]byte, string, *sourceFetchError) {
+	kind := sm.Spec.Source.SourceRef.Kind
+	name := sm.Spec.Source.SourceRef.Name
+	path := sm.Spec.Source.Path
+	srcKey := client.ObjectKey{Namespace: sm.Namespace, Name: name}
+
+	switch kind {
+	case sopsv1alpha2.SourceKindGitRepository:
+		var repo sopsv1alpha1.GitRepository
+		if err := r.Get(ctx, srcKey, &repo); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil, "", &sourceFetchError{"SourceMissing", fmt.Sprintf("GitRepository %q not found", name)}
+			}
+			return nil, "", &sourceFetchError{"SourceMissing", err.Error()}
+		}
+		if !isGitSourceReady(&repo) {
+			return nil, "", &sourceFetchError{"SourceNotReady", fmt.Sprintf("GitRepository %q is not ready", name)}
+		}
+		content, sha, err := r.Registry.Read(srcKey, path)
+		if err != nil {
+			return nil, "", &sourceFetchError{"ReadFailed", err.Error()}
+		}
+		return content, sha, nil
+
+	case sopsv1alpha2.SourceKindObjectSource:
+		var os sopsv1alpha2.ObjectSource
+		if err := r.Get(ctx, srcKey, &os); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil, "", &sourceFetchError{"SourceMissing", fmt.Sprintf("ObjectSource %q not found", name)}
+			}
+			return nil, "", &sourceFetchError{"SourceMissing", err.Error()}
+		}
+		if !isObjectSourceReady(&os) {
+			return nil, "", &sourceFetchError{"SourceNotReady", fmt.Sprintf("ObjectSource %q is not ready", name)}
+		}
+		content, etag, err := r.Registry.ReadObject(ctx, srcKey, path)
+		if err != nil {
+			return nil, "", &sourceFetchError{"ReadFailed", err.Error()}
+		}
+		return content, etag, nil
+
+	default:
+		return nil, "", &sourceFetchError{"UnknownSourceKind", fmt.Sprintf("unsupported sourceRef.kind %q", kind)}
+	}
+}
+
 func (r *SopsSecretManifestReconciler) applyManifestSecret(
 	ctx context.Context,
-	sm *sopsv1alpha1.SopsSecretManifest,
+	sm *sopsv1alpha2.SopsSecretManifest,
 	parsed *corev1.Secret,
-	name, namespace, hash, commitSHA string,
+	name, namespace, hash, revision string,
 ) error {
 	out := &corev1.Secret{}
 	out.Name = name
@@ -189,8 +221,6 @@ func (r *SopsSecretManifestReconciler) applyManifestSecret(
 			}
 		}
 
-		// Preserve user labels/annotations from the decrypted manifest,
-		// then overlay our ownership markers (ours win on conflict).
 		if out.Labels == nil {
 			out.Labels = map[string]string{}
 		}
@@ -204,13 +234,12 @@ func (r *SopsSecretManifestReconciler) applyManifestSecret(
 		out.Annotations[OwnerAnnotation] = ownerKey
 		out.Annotations[OwnerUIDAnnotation] = string(sm.UID)
 		out.Annotations[ContentHashAnnotation] = hash
-		out.Annotations[SourceCommitAnnotation] = commitSHA
+		out.Annotations[SourceCommitAnnotation] = revision
 
 		out.Type = parsed.Type
 		if out.Type == "" {
 			out.Type = corev1.SecretTypeOpaque
 		}
-		// Data is authoritative — replace wholesale.
 		out.Data = parsed.Data
 		out.StringData = nil
 		return nil
@@ -222,7 +251,7 @@ func (r *SopsSecretManifestReconciler) applyManifestSecret(
 // The decrypted manifest's name is unavailable here, so we either use
 // target.nameOverride if set, or scan managed Secrets in the namespace
 // for the one whose owner annotation matches this CR.
-func (r *SopsSecretManifestReconciler) deleteOwnedSecretIfKnown(ctx context.Context, sm *sopsv1alpha1.SopsSecretManifest) error {
+func (r *SopsSecretManifestReconciler) deleteOwnedSecretIfKnown(ctx context.Context, sm *sopsv1alpha2.SopsSecretManifest) error {
 	ns := sm.Spec.Target.Namespace
 	if ns == "" {
 		ns = sm.Namespace
@@ -264,7 +293,7 @@ func (r *SopsSecretManifestReconciler) deleteIfOwned(ctx context.Context, name, 
 }
 
 func (r *SopsSecretManifestReconciler) failManifestStatus(
-	ctx context.Context, sm *sopsv1alpha1.SopsSecretManifest,
+	ctx context.Context, sm *sopsv1alpha2.SopsSecretManifest,
 	condType, reason, msg string,
 ) (ctrl.Result, error) {
 	setCondition(&sm.Status.Conditions, condType, metav1.ConditionFalse, reason, msg)
@@ -277,28 +306,54 @@ func (r *SopsSecretManifestReconciler) failManifestStatus(
 func (r *SopsSecretManifestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
-		&sopsv1alpha1.SopsSecretManifest{},
-		SopsSecretManifestRepoRefIndex,
+		&sopsv1alpha2.SopsSecretManifest{},
+		SopsSecretManifestGitRefIndex,
 		func(obj client.Object) []string {
-			s := obj.(*sopsv1alpha1.SopsSecretManifest)
-			return []string{s.Spec.Source.RepositoryRef.Name}
+			s := obj.(*sopsv1alpha2.SopsSecretManifest)
+			if s.Spec.Source.SourceRef.Kind != sopsv1alpha2.SourceKindGitRepository {
+				return nil
+			}
+			return []string{s.Spec.Source.SourceRef.Name}
+		},
+	); err != nil {
+		return err
+	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&sopsv1alpha2.SopsSecretManifest{},
+		SopsSecretManifestObjectRefIndex,
+		func(obj client.Object) []string {
+			s := obj.(*sopsv1alpha2.SopsSecretManifest)
+			if s.Spec.Source.SourceRef.Kind != sopsv1alpha2.SourceKindObjectSource {
+				return nil
+			}
+			return []string{s.Spec.Source.SourceRef.Name}
 		},
 	); err != nil {
 		return err
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&sopsv1alpha1.SopsSecretManifest{}).
-		Watches(&sopsv1alpha1.GitRepository{}, handler.EnqueueRequestsFromMapFunc(r.mapRepoToSopsSecretManifests)).
+		For(&sopsv1alpha2.SopsSecretManifest{}).
+		Watches(&sopsv1alpha1.GitRepository{}, handler.EnqueueRequestsFromMapFunc(r.mapGitRepoToManifests)).
+		Watches(&sopsv1alpha2.ObjectSource{}, handler.EnqueueRequestsFromMapFunc(r.mapObjectSourceToManifests)).
 		Named("sopssecretmanifest").
 		Complete(r)
 }
 
-func (r *SopsSecretManifestReconciler) mapRepoToSopsSecretManifests(ctx context.Context, obj client.Object) []reconcile.Request {
-	var list sopsv1alpha1.SopsSecretManifestList
+func (r *SopsSecretManifestReconciler) mapGitRepoToManifests(ctx context.Context, obj client.Object) []reconcile.Request {
+	return r.mapSourceToManifests(ctx, obj, SopsSecretManifestGitRefIndex)
+}
+
+func (r *SopsSecretManifestReconciler) mapObjectSourceToManifests(ctx context.Context, obj client.Object) []reconcile.Request {
+	return r.mapSourceToManifests(ctx, obj, SopsSecretManifestObjectRefIndex)
+}
+
+func (r *SopsSecretManifestReconciler) mapSourceToManifests(ctx context.Context, obj client.Object, index string) []reconcile.Request {
+	var list sopsv1alpha2.SopsSecretManifestList
 	if err := r.List(ctx, &list,
 		client.InNamespace(obj.GetNamespace()),
-		client.MatchingFields{SopsSecretManifestRepoRefIndex: obj.GetName()},
+		client.MatchingFields{index: obj.GetName()},
 	); err != nil {
 		return nil
 	}
