@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	sopsv1alpha1 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha1"
+	sopsv1alpha2 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha2"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/source"
 )
 
@@ -40,22 +41,25 @@ var _ = Describe("SopsSecretManifest Controller", func() {
 		uniqueName = func(prefix string) string { return fmt.Sprintf("%s-%d", prefix, counter) }
 	})
 
-	makeCR := func(name, repoRef string) *sopsv1alpha1.SopsSecretManifest {
-		return &sopsv1alpha1.SopsSecretManifest{
+	makeCR := func(name, repoRef string) *sopsv1alpha2.SopsSecretManifest {
+		return &sopsv1alpha2.SopsSecretManifest{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-			Spec: sopsv1alpha1.SopsSecretManifestSpec{
-				Source: sopsv1alpha1.SourceRef{
-					RepositoryRef: sopsv1alpha1.LocalObjectReference{Name: repoRef},
-					Path:          "secret.enc.yaml",
+			Spec: sopsv1alpha2.SopsSecretManifestSpec{
+				Source: sopsv1alpha2.SourceRef{
+					SourceRef: sopsv1alpha2.SourceKindRef{
+						Kind: sopsv1alpha2.SourceKindGitRepository,
+						Name: repoRef,
+					},
+					Path: "secret.enc.yaml",
 				},
-				Decryption: sopsv1alpha1.DecryptionSpec{
-					KeyRef: sopsv1alpha1.SecretKeyRef{Name: "age-key", Key: "age.agekey"},
+				Decryption: sopsv1alpha2.DecryptionSpec{
+					KeyRef: sopsv1alpha2.SecretKeyRef{Name: "age-key", Key: "age.agekey"},
 				},
 			},
 		}
 	}
 
-	reconcileOnce := func(name string) *sopsv1alpha1.SopsSecretManifest {
+	reconcileOnce := func(name string) *sopsv1alpha2.SopsSecretManifest {
 		r := &SopsSecretManifestReconciler{
 			Client:   k8sClient,
 			Scheme:   k8sClient.Scheme(),
@@ -66,12 +70,12 @@ var _ = Describe("SopsSecretManifest Controller", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		out := &sopsv1alpha1.SopsSecretManifest{}
+		out := &sopsv1alpha2.SopsSecretManifest{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, out)).To(Succeed())
 		return out
 	}
 
-	condition := func(sm *sopsv1alpha1.SopsSecretManifest, t string) *metav1.Condition {
+	condition := func(sm *sopsv1alpha2.SopsSecretManifest, t string) *metav1.Condition {
 		for i := range sm.Status.Conditions {
 			if sm.Status.Conditions[i].Type == t {
 				return &sm.Status.Conditions[i]
@@ -93,7 +97,7 @@ var _ = Describe("SopsSecretManifest Controller", func() {
 				NamespacedName: types.NamespacedName{Namespace: namespace, Name: name},
 			})
 
-			got := &sopsv1alpha1.SopsSecretManifest{}
+			got := &sopsv1alpha2.SopsSecretManifest{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, got)).To(Succeed())
 			Expect(got.Finalizers).To(ContainElement(Finalizer))
 
@@ -106,10 +110,10 @@ var _ = Describe("SopsSecretManifest Controller", func() {
 			name := uniqueName("sm-no-repo")
 			Expect(k8sClient.Create(ctx, makeCR(name, "missing-repo"))).To(Succeed())
 
-			_ = reconcileOnce(name) // finalizer add
+			_ = reconcileOnce(name)
 			got := reconcileOnce(name)
 
-			c := condition(got, sopsv1alpha1.ConditionSourceReady)
+			c := condition(got, sopsv1alpha2.ConditionSourceReady)
 			Expect(c).NotTo(BeNil())
 			Expect(c.Status).To(Equal(metav1.ConditionFalse))
 			Expect(c.Reason).To(Equal("SourceMissing"))
@@ -130,7 +134,7 @@ var _ = Describe("SopsSecretManifest Controller", func() {
 			_ = reconcileOnce(name)
 			got := reconcileOnce(name)
 
-			c := condition(got, sopsv1alpha1.ConditionSourceReady)
+			c := condition(got, sopsv1alpha2.ConditionSourceReady)
 			Expect(c).NotTo(BeNil())
 			Expect(c.Status).To(Equal(metav1.ConditionFalse))
 			Expect(c.Reason).To(Equal("SourceNotReady"))

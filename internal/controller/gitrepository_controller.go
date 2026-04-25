@@ -79,6 +79,14 @@ func (r *GitRepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
+	// Force-sync: a changed reconcile-requested annotation drops the cache
+	// before the EnsureCached call, so the next fetch re-pulls from origin
+	// regardless of the configured commit/branch.
+	reqToken := gr.Annotations[ReconcileRequestAnnotation]
+	if reqToken != "" && reqToken != gr.Status.LastProcessedReconcileToken {
+		r.Registry.Forget(req.NamespacedName)
+	}
+
 	auth, err := r.resolveAuth(ctx, &gr)
 	if err != nil {
 		log.Error(err, "auth resolution failed")
@@ -113,6 +121,7 @@ func (r *GitRepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	gr.Status.LastSyncedCommit = sha
 	gr.Status.CacheReady = true
+	gr.Status.LastProcessedReconcileToken = reqToken
 	gr.Status.ObservedGeneration = gr.Generation
 	short := sha
 	if len(short) > 7 {

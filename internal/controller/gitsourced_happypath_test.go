@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	sopsv1alpha1 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha1"
+	sopsv1alpha2 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha2"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/source"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/testutil"
 )
@@ -35,6 +36,19 @@ type gitFixture struct {
 	registry  *source.Registry
 	repoCRRef string // GitRepository CR name
 	keyRef    string // age-key Secret name
+}
+
+// gitSourceRef is shorthand for the v1alpha2 SourceRef pointing at a
+// GitRepository — used to keep the per-test SopsSecret/SopsSecretManifest
+// stanzas readable.
+func gitSourceRef(name, path string) sopsv1alpha2.SourceRef {
+	return sopsv1alpha2.SourceRef{
+		SourceRef: sopsv1alpha2.SourceKindRef{
+			Kind: sopsv1alpha2.SourceKindGitRepository,
+			Name: name,
+		},
+		Path: path,
+	}
 }
 
 var _ = Describe("Git-sourced happy paths (envtest)", func() {
@@ -106,17 +120,14 @@ var _ = Describe("Git-sourced happy paths (envtest)", func() {
 			plain := []byte("db_user: alice\ndb_password: s3cret\napi_token: xyz\n")
 			fx := newGitFixture(prefix, "creds.enc.yaml", plain)
 
-			cr := &sopsv1alpha1.SopsSecret{
+			cr := &sopsv1alpha2.SopsSecret{
 				ObjectMeta: metav1.ObjectMeta{Name: prefix, Namespace: namespace},
-				Spec: sopsv1alpha1.SopsSecretSpec{
-					Source: sopsv1alpha1.SourceRef{
-						RepositoryRef: sopsv1alpha1.LocalObjectReference{Name: fx.repoCRRef},
-						Path:          "creds.enc.yaml",
+				Spec: sopsv1alpha2.SopsSecretSpec{
+					Source: gitSourceRef(fx.repoCRRef, "creds.enc.yaml"),
+					Decryption: sopsv1alpha2.DecryptionSpec{
+						KeyRef: sopsv1alpha2.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
 					},
-					Decryption: sopsv1alpha1.DecryptionSpec{
-						KeyRef: sopsv1alpha1.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
-					},
-					Data: []sopsv1alpha1.DataMapping{
+					Data: []sopsv1alpha2.DataMapping{
 						{Key: "DB_USER", From: "db_user"},
 						{Key: "DB_PASSWORD", From: "db_password"},
 					},
@@ -145,10 +156,8 @@ var _ = Describe("Git-sourced happy paths (envtest)", func() {
 			Expect(string(target.Data["DB_PASSWORD"])).To(Equal("s3cret"))
 			Expect(target.Annotations[SourceCommitAnnotation]).NotTo(BeEmpty())
 
-			// Remove DB_PASSWORD, add API_TOKEN → next reconcile authoritatively
-			// replaces the target Secret's data.
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: prefix}, cr)).To(Succeed())
-			cr.Spec.Data = []sopsv1alpha1.DataMapping{
+			cr.Spec.Data = []sopsv1alpha2.DataMapping{
 				{Key: "DB_USER", From: "db_user"},
 				{Key: "API_TOKEN", From: "api_token"},
 			}
@@ -171,7 +180,6 @@ var _ = Describe("Git-sourced happy paths (envtest)", func() {
 			plain := []byte("db_user: alice\ndb_password: s3cret\n")
 			fx := newGitFixture(prefix, "adopt.enc.yaml", plain)
 
-			// Pre-existing Secret not managed by this operator.
 			pre := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:        prefix,
@@ -186,17 +194,14 @@ var _ = Describe("Git-sourced happy paths (envtest)", func() {
 			}
 			Expect(k8sClient.Create(ctx, pre)).To(Succeed())
 
-			cr := &sopsv1alpha1.SopsSecret{
+			cr := &sopsv1alpha2.SopsSecret{
 				ObjectMeta: metav1.ObjectMeta{Name: prefix, Namespace: namespace},
-				Spec: sopsv1alpha1.SopsSecretSpec{
-					Source: sopsv1alpha1.SourceRef{
-						RepositoryRef: sopsv1alpha1.LocalObjectReference{Name: fx.repoCRRef},
-						Path:          "adopt.enc.yaml",
+				Spec: sopsv1alpha2.SopsSecretSpec{
+					Source: gitSourceRef(fx.repoCRRef, "adopt.enc.yaml"),
+					Decryption: sopsv1alpha2.DecryptionSpec{
+						KeyRef: sopsv1alpha2.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
 					},
-					Decryption: sopsv1alpha1.DecryptionSpec{
-						KeyRef: sopsv1alpha1.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
-					},
-					Data: []sopsv1alpha1.DataMapping{
+					Data: []sopsv1alpha2.DataMapping{
 						{Key: "DB_USER", From: "db_user"},
 						{Key: "DB_PASSWORD", From: "db_password"},
 					},
@@ -209,7 +214,6 @@ var _ = Describe("Git-sourced happy paths (envtest)", func() {
 				Scheme:   k8sClient.Scheme(),
 				Registry: fx.registry,
 			}
-			// Finalizer add + actual reconcile. Adoption must be refused.
 			for range 2 {
 				_, err := reconr.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{Namespace: namespace, Name: prefix},
@@ -217,7 +221,6 @@ var _ = Describe("Git-sourced happy paths (envtest)", func() {
 				Expect(err).NotTo(HaveOccurred())
 			}
 
-			// Pre-existing Secret must be untouched — no ManagedBy label, original data intact.
 			got := &corev1.Secret{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: prefix}, got)).To(Succeed())
 			Expect(got.Labels).NotTo(HaveKey(ManagedByLabel))
@@ -225,14 +228,12 @@ var _ = Describe("Git-sourced happy paths (envtest)", func() {
 			Expect(string(got.Data["DB_USER"])).To(Equal("stale-user"))
 			Expect(got.Data).To(HaveKey("LEGACY_ONLY"))
 
-			// CR must report Applied=False with reason ApplyFailed.
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: prefix}, cr)).To(Succeed())
-			applied := conditionByType(cr.Status.Conditions, sopsv1alpha1.ConditionApplied)
+			applied := conditionByType(cr.Status.Conditions, sopsv1alpha2.ConditionApplied)
 			Expect(applied).NotTo(BeNil())
 			Expect(applied.Status).To(Equal(metav1.ConditionFalse))
 			Expect(applied.Reason).To(Equal("ApplyFailed"))
 
-			// Flip adopt=true and re-reconcile.
 			cr.Spec.Target.Adopt = true
 			Expect(k8sClient.Update(ctx, cr)).To(Succeed())
 
@@ -247,7 +248,6 @@ var _ = Describe("Git-sourced happy paths (envtest)", func() {
 			Expect(got.Annotations[ContentHashAnnotation]).NotTo(BeEmpty())
 			Expect(string(got.Data["DB_USER"])).To(Equal("alice"))
 			Expect(string(got.Data["DB_PASSWORD"])).To(Equal("s3cret"))
-			// Data is authoritative after adoption — the legacy key is dropped.
 			Expect(got.Data).NotTo(HaveKey("LEGACY_ONLY"))
 		})
 
@@ -256,17 +256,14 @@ var _ = Describe("Git-sourced happy paths (envtest)", func() {
 			plain := []byte("token: correct-horse\n")
 			fx := newGitFixture(prefix, "drift.enc.yaml", plain)
 
-			cr := &sopsv1alpha1.SopsSecret{
+			cr := &sopsv1alpha2.SopsSecret{
 				ObjectMeta: metav1.ObjectMeta{Name: prefix, Namespace: namespace},
-				Spec: sopsv1alpha1.SopsSecretSpec{
-					Source: sopsv1alpha1.SourceRef{
-						RepositoryRef: sopsv1alpha1.LocalObjectReference{Name: fx.repoCRRef},
-						Path:          "drift.enc.yaml",
+				Spec: sopsv1alpha2.SopsSecretSpec{
+					Source: gitSourceRef(fx.repoCRRef, "drift.enc.yaml"),
+					Decryption: sopsv1alpha2.DecryptionSpec{
+						KeyRef: sopsv1alpha2.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
 					},
-					Decryption: sopsv1alpha1.DecryptionSpec{
-						KeyRef: sopsv1alpha1.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
-					},
-					Data: []sopsv1alpha1.DataMapping{{Key: "TOKEN", From: "token"}},
+					Data: []sopsv1alpha2.DataMapping{{Key: "TOKEN", From: "token"}},
 				},
 			}
 			Expect(k8sClient.Create(ctx, cr)).To(Succeed())
@@ -288,7 +285,6 @@ var _ = Describe("Git-sourced happy paths (envtest)", func() {
 			Expect(k8sClient.Get(ctx, key, target)).To(Succeed())
 			Expect(string(target.Data["TOKEN"])).To(Equal("correct-horse"))
 
-			// Out-of-band drift: overwrite TOKEN and add a rogue key.
 			target.Data["TOKEN"] = []byte("tampered")
 			target.Data["ROGUE"] = []byte("injected")
 			Expect(k8sClient.Update(ctx, target)).To(Succeed())
@@ -305,17 +301,14 @@ var _ = Describe("Git-sourced happy paths (envtest)", func() {
 			prefix := uniq("ss-fin")
 			fx := newGitFixture(prefix, "c.enc.yaml", []byte("x: 1\n"))
 
-			cr := &sopsv1alpha1.SopsSecret{
+			cr := &sopsv1alpha2.SopsSecret{
 				ObjectMeta: metav1.ObjectMeta{Name: prefix, Namespace: namespace},
-				Spec: sopsv1alpha1.SopsSecretSpec{
-					Source: sopsv1alpha1.SourceRef{
-						RepositoryRef: sopsv1alpha1.LocalObjectReference{Name: fx.repoCRRef},
-						Path:          "c.enc.yaml",
+				Spec: sopsv1alpha2.SopsSecretSpec{
+					Source: gitSourceRef(fx.repoCRRef, "c.enc.yaml"),
+					Decryption: sopsv1alpha2.DecryptionSpec{
+						KeyRef: sopsv1alpha2.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
 					},
-					Decryption: sopsv1alpha1.DecryptionSpec{
-						KeyRef: sopsv1alpha1.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
-					},
-					Data: []sopsv1alpha1.DataMapping{{Key: "X", From: "x"}},
+					Data: []sopsv1alpha2.DataMapping{{Key: "X", From: "x"}},
 				},
 			}
 			Expect(k8sClient.Create(ctx, cr)).To(Succeed())
@@ -363,19 +356,15 @@ stringData:
 			fx := newGitFixture(prefix, "sec.enc.yaml", manifest)
 
 			overrideName := prefix + "-override"
-			cr := &sopsv1alpha1.SopsSecretManifest{
+			cr := &sopsv1alpha2.SopsSecretManifest{
 				ObjectMeta: metav1.ObjectMeta{Name: prefix, Namespace: namespace},
-				Spec: sopsv1alpha1.SopsSecretManifestSpec{
-					Source: sopsv1alpha1.SourceRef{
-						RepositoryRef: sopsv1alpha1.LocalObjectReference{Name: fx.repoCRRef},
-						Path:          "sec.enc.yaml",
+				Spec: sopsv1alpha2.SopsSecretManifestSpec{
+					Source: gitSourceRef(fx.repoCRRef, "sec.enc.yaml"),
+					Decryption: sopsv1alpha2.DecryptionSpec{
+						KeyRef: sopsv1alpha2.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
 					},
-					Decryption: sopsv1alpha1.DecryptionSpec{
-						KeyRef: sopsv1alpha1.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
-					},
-					Target: sopsv1alpha1.ManifestTarget{
+					Target: sopsv1alpha2.ManifestTarget{
 						NameOverride: overrideName,
-						// namespace defaults to CR's — "default" — NOT "should-be-ignored".
 					},
 				},
 			}
@@ -400,11 +389,6 @@ stringData:
 			Expect(string(target.Data["username"])).To(Equal("alice"))
 			Expect(string(target.Data["password"])).To(Equal("s3cret"))
 
-			// The manifest's metadata.name was "manifest-name" — nameOverride
-			// should win, so no Secret with that name should exist in the
-			// CR's namespace. (envtest typically lacks a controller for
-			// namespace creation; we skip checking the manifest's claimed
-			// namespace, which `should-be-ignored` doesn't exist.)
 			err := k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: "manifest-name"}, &corev1.Secret{})
 			Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		})

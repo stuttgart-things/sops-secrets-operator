@@ -3,8 +3,6 @@ package transform
 import (
 	"strings"
 	"testing"
-
-	sopsv1alpha1 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha1"
 )
 
 func TestParseFlatYAML(t *testing.T) {
@@ -59,7 +57,7 @@ func TestParseFlatYAMLRejectsNull(t *testing.T) {
 
 func TestApplyMappingFailClosed(t *testing.T) {
 	src := map[string]string{"a": "1"}
-	_, err := ApplyMapping(src, []sopsv1alpha1.DataMapping{{Key: "X", From: "missing"}})
+	_, err := ApplyMapping(src, []DataMapping{{Key: "X", From: "missing"}})
 	if err == nil || !strings.Contains(err.Error(), "missing") {
 		t.Fatalf("expected missing-key error, got %v", err)
 	}
@@ -67,7 +65,7 @@ func TestApplyMappingFailClosed(t *testing.T) {
 
 func TestApplyMappingRenames(t *testing.T) {
 	src := map[string]string{"db_user": "alice", "db_pass": "s3cret"}
-	out, err := ApplyMapping(src, []sopsv1alpha1.DataMapping{
+	out, err := ApplyMapping(src, []DataMapping{
 		{Key: "DB_USER", From: "db_user"},
 		{Key: "DB_PASSWORD", From: "db_pass"},
 	})

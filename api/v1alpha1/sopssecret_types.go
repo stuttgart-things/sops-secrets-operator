@@ -99,6 +99,13 @@ type SopsSecretStatus struct {
 	// +optional
 	LastSyncedCommit string `json:"lastSyncedCommit,omitempty"`
 
+	// LastProcessedReconcileToken records the last value of the
+	// sops.stuttgart-things.com/reconcile-requested annotation that the
+	// reconciler honored. When the annotation is changed, the next
+	// reconcile re-runs the full read/decrypt/apply pipeline.
+	// +optional
+	LastProcessedReconcileToken string `json:"lastProcessedReconcileToken,omitempty"`
+
 	// ObservedGeneration reflects the generation most recently reconciled.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -117,7 +124,6 @@ const (
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:storageversion
 // +kubebuilder:printcolumn:name="Source",type=string,JSONPath=".spec.source.repositoryRef.name"
 // +kubebuilder:printcolumn:name="Path",type=string,JSONPath=".spec.source.path"
 // +kubebuilder:printcolumn:name="Applied",type=string,JSONPath=".status.conditions[?(@.type==\"Applied\")].status"

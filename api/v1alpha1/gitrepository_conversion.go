@@ -34,10 +34,11 @@ func (src *GitRepository) ConvertTo(dstRaw conversion.Hub) error {
 		}
 	}
 	dst.Status = v1alpha2.GitRepositoryStatus{
-		LastSyncedCommit:   src.Status.LastSyncedCommit,
-		CacheReady:         src.Status.CacheReady,
-		ObservedGeneration: src.Status.ObservedGeneration,
-		Conditions:         src.Status.Conditions,
+		LastSyncedCommit:            src.Status.LastSyncedCommit,
+		CacheReady:                  src.Status.CacheReady,
+		LastProcessedReconcileToken: src.Status.LastProcessedReconcileToken,
+		ObservedGeneration:          src.Status.ObservedGeneration,
+		Conditions:                  src.Status.Conditions,
 	}
 	return nil
 }
@@ -60,10 +61,11 @@ func (dst *GitRepository) ConvertFrom(srcRaw conversion.Hub) error {
 		}
 	}
 	dst.Status = GitRepositoryStatus{
-		LastSyncedCommit:   src.Status.LastSyncedCommit,
-		CacheReady:         src.Status.CacheReady,
-		ObservedGeneration: src.Status.ObservedGeneration,
-		Conditions:         src.Status.Conditions,
+		LastSyncedCommit:            src.Status.LastSyncedCommit,
+		CacheReady:                  src.Status.CacheReady,
+		LastProcessedReconcileToken: src.Status.LastProcessedReconcileToken,
+		ObservedGeneration:          src.Status.ObservedGeneration,
+		Conditions:                  src.Status.Conditions,
 	}
 	return nil
 }

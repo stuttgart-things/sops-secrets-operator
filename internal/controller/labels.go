@@ -69,6 +69,12 @@ const (
 	// Finalizer is set on every SopsSecret / SopsSecretManifest so the
 	// target Secret can be cleaned up on CR deletion.
 	Finalizer = "sops.stuttgart-things.com/finalizer"
+
+	// ReconcileRequestAnnotation, when changed, makes the next reconcile
+	// run the full pipeline regardless of cache state. The value is opaque
+	// (timestamp / UUID / commit / etc.) — the reconciler only checks
+	// whether it differs from status.lastProcessedReconcileToken.
+	ReconcileRequestAnnotation = "sops.stuttgart-things.com/reconcile-requested"
 )
 
 // FieldOwner is the server-side-apply / CreateOrUpdate field-manager name.

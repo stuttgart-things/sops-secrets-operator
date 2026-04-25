@@ -77,6 +77,12 @@ type GitRepositoryStatus struct {
 	// +optional
 	CacheReady bool `json:"cacheReady,omitempty"`
 
+	// LastProcessedReconcileToken records the last value of the
+	// sops.stuttgart-things.com/reconcile-requested annotation that the
+	// reconciler honored (cache eviction + forced fetch).
+	// +optional
+	LastProcessedReconcileToken string `json:"lastProcessedReconcileToken,omitempty"`
+
 	// ObservedGeneration reflects the generation most recently reconciled.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`

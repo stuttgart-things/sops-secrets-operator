@@ -9,14 +9,19 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	sopsv1alpha1 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha1"
 )
+
+// SecretKeyRef is a neutral pair of (Secret name, data key) used to fetch
+// an age private key. Decoupled from any API version's Go type.
+type SecretKeyRef struct {
+	Name string
+	Key  string
+}
 
 // Age reads the age private key bytes from the named Secret+key in the
 // given namespace. Returns an error if the Secret or key is missing, or
 // if the key value is empty.
-func Age(ctx context.Context, c client.Client, namespace string, ref sopsv1alpha1.SecretKeyRef) ([]byte, error) {
+func Age(ctx context.Context, c client.Client, namespace string, ref SecretKeyRef) ([]byte, error) {
 	var sec corev1.Secret
 	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: ref.Name}, &sec); err != nil {
 		return nil, fmt.Errorf("get age-key secret %q: %w", ref.Name, err)

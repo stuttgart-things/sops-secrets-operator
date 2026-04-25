@@ -1,0 +1,7 @@
+# Webhook resources. Today the operator only serves a conversion webhook
+# (auto-registered by controller-runtime at /convert for any scheme-registered
+# type implementing Hub + ConvertTo/ConvertFrom). When a validating or
+# mutating webhook is added, generate manifests via `make manifests` and
+# add the resulting file to the resources list below.
+resources:
+- service.yaml

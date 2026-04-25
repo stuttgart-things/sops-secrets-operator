@@ -39,9 +39,10 @@ func (src *InlineSopsSecret) ConvertTo(dstRaw conversion.Hub) error {
 		Data: convertDataMappingsTo(src.Spec.Data),
 	}
 	dst.Status = v1alpha2.InlineSopsSecretStatus{
-		LastAppliedHash:    src.Status.LastAppliedHash,
-		ObservedGeneration: src.Status.ObservedGeneration,
-		Conditions:         src.Status.Conditions,
+		LastAppliedHash:             src.Status.LastAppliedHash,
+		LastProcessedReconcileToken: src.Status.LastProcessedReconcileToken,
+		ObservedGeneration:          src.Status.ObservedGeneration,
+		Conditions:                  src.Status.Conditions,
 	}
 	return nil
 }
@@ -68,9 +69,10 @@ func (dst *InlineSopsSecret) ConvertFrom(srcRaw conversion.Hub) error {
 		Data: convertDataMappingsFrom(src.Spec.Data),
 	}
 	dst.Status = InlineSopsSecretStatus{
-		LastAppliedHash:    src.Status.LastAppliedHash,
-		ObservedGeneration: src.Status.ObservedGeneration,
-		Conditions:         src.Status.Conditions,
+		LastAppliedHash:             src.Status.LastAppliedHash,
+		LastProcessedReconcileToken: src.Status.LastProcessedReconcileToken,
+		ObservedGeneration:          src.Status.ObservedGeneration,
+		Conditions:                  src.Status.Conditions,
 	}
 	return nil
 }

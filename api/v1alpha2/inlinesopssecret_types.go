@@ -68,6 +68,9 @@ type InlineSopsSecretStatus struct {
 	LastAppliedHash string `json:"lastAppliedHash,omitempty"`
 
 	// +optional
+	LastProcessedReconcileToken string `json:"lastProcessedReconcileToken,omitempty"`
+
+	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// +listType=map
