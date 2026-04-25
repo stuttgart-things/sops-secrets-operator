@@ -8,40 +8,52 @@ A Kubernetes operator that syncs [SOPS](https://github.com/getsops/sops)-encrypt
 
 This operator bundles the Git-sync into the operator itself, so the workflow is:
 
-1. Encrypt a file with vanilla `sops` and push it to a git repo.
-2. Apply a `GitRepository` + a `SopsSecret` / `SopsSecretManifest` CR.
+1. Encrypt a file with vanilla `sops` and push it to a git repo (or upload it to an HTTPS / S3 endpoint).
+2. Apply a `GitRepository` or `ObjectSource` + a `SopsSecret` / `SopsSecretManifest` CR.
 3. The operator decrypts and produces a target `Secret`.
 
 No delivery tool required.
 
 ## Architecture
 
-Four CRDs in API group `sops.stuttgart-things.com/v1alpha1`, plus `ObjectSource` under `sops.stuttgart-things.com/v1alpha2` (experimental — the controller fetches and caches, but consumer dispatch via `sourceRef` is not wired yet; see #26):
+Five CRDs across two API versions in the `sops.stuttgart-things.com` group. `SopsSecret` and `SopsSecretManifest` store as `v1alpha2`; `GitRepository`, `InlineSopsSecret` still store as `v1alpha1`; `ObjectSource` is `v1alpha2`-only.
 
 ```
-┌──────────────────┐       ┌──────────────────────┐      ┌──────────────┐
-│  GitRepository   │◄──────│  SopsSecret          │─────►│  Secret      │
-│  (source + auth) │       │  (flat-map → Secret) │      │              │
-└──────────────────┘       └──────────────────────┘      └──────────────┘
-         ▲
-         │                 ┌──────────────────────┐      ┌──────────────┐
-         └─────────────────│  SopsSecretManifest  │─────►│  Secret      │
-                           │  (passthrough)       │      │              │
-                           └──────────────────────┘      └──────────────┘
+┌──────────────────┐
+│  GitRepository   │◄────┐
+│  (source + auth) │     │      ┌──────────────────────┐      ┌──────────────┐
+└──────────────────┘     ├──────│  SopsSecret          │─────►│  Secret      │
+                         │      │  (flat-map → Secret) │      │              │
+┌──────────────────┐     │      └──────────────────────┘      └──────────────┘
+│  ObjectSource    │◄────┤
+│  (HTTPS / S3)    │     │      ┌──────────────────────┐      ┌──────────────┐
+└──────────────────┘     └──────│  SopsSecretManifest  │─────►│  Secret      │
+                                │  (passthrough)       │      │              │
+                                └──────────────────────┘      └──────────────┘
 
-                           ┌──────────────────────┐      ┌──────────────┐
-                           │  InlineSopsSecret    │─────►│  Secret      │
-                           │  (inline payload)    │      │              │
-                           └──────────────────────┘      └──────────────┘
+                                ┌──────────────────────┐      ┌──────────────┐
+                                │  InlineSopsSecret    │─────►│  Secret      │
+                                │  (inline payload)    │      │              │
+                                └──────────────────────┘      └──────────────┘
+```
+
+Consumers reference a source via `spec.source.sourceRef`:
+
+```yaml
+source:
+  sourceRef:
+    kind: GitRepository   # or ObjectSource
+    name: platform-secrets
+  path: prod/app/creds.enc.yaml
 ```
 
 - **`GitRepository`** — connection to a Git repo: URL, branch or pinned revision, poll interval, and either HTTP basic or SSH auth.
-- **`ObjectSource` (v1alpha2, experimental)** — connection to an HTTPS URL or S3-compatible bucket (MinIO / Ceph / R2 / AWS S3). HTTPS mode caches the object via `ETag` / `If-None-Match`; bucket mode probes reachability and auth. Not yet selectable as a `SopsSecret` / `SopsSecretManifest` source — that wiring lands in #26.
-- **`SopsSecret`** — **mapping mode, git-sourced**: source file is a SOPS-encrypted flat key/value YAML. `spec.data[]` explicitly picks source keys and renames them into target Secret `data` keys. Unknown keys in the file are dropped; missing declared keys fail-closed.
-- **`SopsSecretManifest`** — **pass-through mode, git-sourced**: source file *is* a SOPS-encrypted `kind: Secret` manifest. The decrypted manifest is applied directly, but namespace is overridden authoritatively by the CR.
-- **`InlineSopsSecret`** — **no git**: the SOPS-encrypted payload lives inside the CR (`spec.encryptedYAML`). The same Mapping / Manifest semantics via `spec.mode`. Access control is RBAC on the CR itself — anyone who can `create inlinesopssecrets` in a namespace can decrypt anything the operator has keys for.
+- **`ObjectSource`** — connection to an HTTPS URL or S3-compatible bucket (MinIO / Ceph / R2 / AWS S3). HTTPS mode caches the object via `ETag` / `If-None-Match`; bucket mode validates reachability + auth and fetches per-key on read. Auth: `bearer`, `basic` (HTTPS); `s3` (access keys, bucket); `none` for public.
+- **`SopsSecret`** — **mapping mode**: source file is a SOPS-encrypted flat key/value YAML. `spec.data[]` explicitly picks source keys and renames them into target Secret `data` keys. Unknown keys in the file are dropped; missing declared keys fail-closed.
+- **`SopsSecretManifest`** — **pass-through mode**: source file *is* a SOPS-encrypted `kind: Secret` manifest. The decrypted manifest is applied directly, but namespace is overridden authoritatively by the CR.
+- **`InlineSopsSecret`** — **no source**: the SOPS-encrypted payload lives inside the CR (`spec.encryptedYAML`). Same Mapping / Manifest semantics via `spec.mode`. Access control is RBAC on the CR itself — anyone who can `create inlinesopssecrets` in a namespace can decrypt anything the operator has keys for.
 
-Both git-sourced CRDs share a single `GitRepository` cache entry, so one repo fed to many secrets is one clone on disk.
+Both source-backed CRDs share their source's cache entry, so one source fed to many secrets is one clone (git) or one cached body (HTTPS) on disk.
 
 ## Quick start
 
@@ -112,14 +124,15 @@ EOF
 
 # SopsSecret — maps three keys out of the decrypted file
 cat <<EOF | kubectl apply -f -
-apiVersion: sops.stuttgart-things.com/v1alpha1
+apiVersion: sops.stuttgart-things.com/v1alpha2
 kind: SopsSecret
 metadata:
   name: app-creds
   namespace: apps
 spec:
   source:
-    repositoryRef:
+    sourceRef:
+      kind: GitRepository
       name: platform-secrets
     path: prod/app/creds.enc.yaml
   decryption:
@@ -135,6 +148,8 @@ spec:
       from: api_token
 EOF
 ```
+
+To back the same `SopsSecret` with an HTTPS `ObjectSource` instead of a git repo, swap `kind: GitRepository` for `kind: ObjectSource` and point `name` at an `ObjectSource` CR — see [`config/samples/sops_v1alpha2_objectsource.yaml`](./config/samples/sops_v1alpha2_objectsource.yaml).
 
 ### 5. Verify
 
@@ -196,10 +211,26 @@ Each CR has status conditions you can watch with `kubectl get -o jsonpath='{.sta
 Runnable examples in [`config/samples/`](./config/samples):
 
 - [`sops_v1alpha1_gitrepository.yaml`](./config/samples/sops_v1alpha1_gitrepository.yaml) — HTTP basic + SSH auth variants
-- [`sops_v1alpha1_sopssecret.yaml`](./config/samples/sops_v1alpha1_sopssecret.yaml) — mapping mode
-- [`sops_v1alpha1_sopssecretmanifest.yaml`](./config/samples/sops_v1alpha1_sopssecretmanifest.yaml) — pass-through mode
+- [`sops_v1alpha2_sopssecret.yaml`](./config/samples/sops_v1alpha2_sopssecret.yaml) — mapping mode against `GitRepository` and against `ObjectSource`
+- [`sops_v1alpha1_sopssecret.yaml`](./config/samples/sops_v1alpha1_sopssecret.yaml) — mapping mode (legacy v1alpha1 shape)
+- [`sops_v1alpha1_sopssecretmanifest.yaml`](./config/samples/sops_v1alpha1_sopssecretmanifest.yaml) — pass-through mode (legacy v1alpha1 shape)
 - [`sops_v1alpha1_inlinesopssecret.yaml`](./config/samples/sops_v1alpha1_inlinesopssecret.yaml) — inline payload, both Mapping and Manifest modes
-- [`sops_v1alpha2_objectsource.yaml`](./config/samples/sops_v1alpha2_objectsource.yaml) — HTTPS-bearer and S3 variants (experimental; see #26 for consumer wiring)
+- [`sops_v1alpha2_objectsource.yaml`](./config/samples/sops_v1alpha2_objectsource.yaml) — `ObjectSource` HTTPS-bearer and S3 variants
+
+## Force-sync
+
+Both source CRs and consumer CRs honor an annotation that bypasses the cached state on the next reconcile:
+
+```sh
+kubectl annotate gitrepository platform-secrets \
+  sops.stuttgart-things.com/reconcile-requested="$(date +%s)" --overwrite
+```
+
+The reconciler compares the annotation value to `status.lastProcessedReconcileToken` and runs the full pipeline when they differ. On a source CR (`GitRepository` / `ObjectSource`), this drops the local cache and re-fetches upstream regardless of commit/ETag — useful when a git push has just landed and you don't want to wait for the next poll. On a consumer CR (`SopsSecret` / `SopsSecretManifest` / `InlineSopsSecret`), it just records the honored token: the consumer pipeline is already idempotent and re-reads the cached source content on every reconcile, so to force a fresh upstream fetch annotate the source.
+
+## v1alpha1 backward compatibility
+
+`SopsSecret` and `SopsSecretManifest` switched their stored shape between v1alpha1 (`source.repositoryRef.name`) and v1alpha2 (`source.sourceRef.{kind,name}`). The CRDs declare `spec.conversion.strategy: Webhook` so v1alpha1 manifests still apply through the operator's auto-registered `/convert` handler — but the apiserver needs to trust the webhook's TLS cert. The default install ships the webhook `Service` (`config/webhook/`); cert-manager wiring is scaffold-only. Until you wire cert-manager (or provision certs another way), prefer v1alpha2 manifests, which match the storage version and don't trigger conversion.
 
 ## Security model
 
@@ -229,7 +260,7 @@ The controllers are scaffolded with [kubebuilder v4](https://book.kubebuilder.io
 - `internal/object/` — HTTPS (`If-None-Match`/ETag) and S3-compatible (minio-go) fetchers for `ObjectSource`
 - `internal/transform/` — pure helpers (flat-YAML parsing, manifest validation, content hashing)
 - `internal/keyresolve/` — age key lookup from Secret refs
-- `internal/controller/` — the three reconcilers
+- `internal/controller/` — five reconcilers (`GitRepository`, `ObjectSource`, `SopsSecret`, `SopsSecretManifest`, `InlineSopsSecret`)
 - `internal/metrics/` — Prometheus counters/histograms
 
 ## License

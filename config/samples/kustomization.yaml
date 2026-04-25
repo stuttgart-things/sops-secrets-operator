@@ -5,4 +5,5 @@ resources:
 - sops_v1alpha1_sopssecretmanifest.yaml
 - sops_v1alpha1_inlinesopssecret.yaml
 - sops_v1alpha2_objectsource.yaml
+- sops_v1alpha2_sopssecret.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
