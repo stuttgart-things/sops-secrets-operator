@@ -230,7 +230,11 @@ The reconciler compares the annotation value to `status.lastProcessedReconcileTo
 
 ## v1alpha1 backward compatibility
 
-`SopsSecret` and `SopsSecretManifest` switched their stored shape between v1alpha1 (`source.repositoryRef.name`) and v1alpha2 (`source.sourceRef.{kind,name}`). The CRDs declare `spec.conversion.strategy: Webhook` so v1alpha1 manifests still apply through the operator's auto-registered `/convert` handler — but the apiserver needs to trust the webhook's TLS cert. The default install ships the webhook `Service` (`config/webhook/`); cert-manager wiring is scaffold-only. Until you wire cert-manager (or provision certs another way), prefer v1alpha2 manifests, which match the storage version and don't trigger conversion.
+`SopsSecret` and `SopsSecretManifest` switched their stored shape between v1alpha1 (`source.repositoryRef.name`) and v1alpha2 (`source.sourceRef.{kind,name}`). The CRDs declare `spec.conversion.strategy: Webhook` so v1alpha1 manifests still apply through the operator's auto-registered `/convert` handler.
+
+The default install (`kubectl apply -k config/default`) wires this end-to-end via cert-manager: an `Issuer` + `Certificate` in `config/certmanager/` issues the webhook serving cert into `webhook-server-cert`, and kustomize replacements stamp the `cert-manager.io/inject-ca-from` annotation onto both CRDs so the apiserver picks up the CA bundle. **cert-manager must be installed in the cluster** before applying the bundle (`kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml`).
+
+If you cannot run cert-manager, either provision the webhook cert externally and patch the CRDs' `spec.conversion.webhook.clientConfig.caBundle` yourself, or stick to v1alpha2 manifests (which match the storage version and never go through `/convert`).
 
 ## Security model
 

@@ -1,0 +1,9 @@
+# Tell kustomize not to mangle cert-manager.io references when
+# resolving CA-injection annotations.
+nameReference:
+- kind: Issuer
+  group: cert-manager.io
+  fieldSpecs:
+  - kind: Certificate
+    group: cert-manager.io
+    path: spec/issuerRef/name
