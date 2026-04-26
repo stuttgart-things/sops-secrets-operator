@@ -20,6 +20,7 @@ limitations under the License.
 package e2e
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -269,6 +270,144 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
+
+		It("should round-trip a v1alpha1 SopsSecret through the conversion webhook to v1alpha2 storage", func() {
+			const conversionNs = "e2e-conversion"
+			By("creating a namespace for the conversion test")
+			cmd := exec.Command("kubectl", "create", "ns", conversionNs)
+			_, _ = utils.Run(cmd)
+			DeferCleanup(func() {
+				cmd := exec.Command("kubectl", "delete", "ns", conversionNs, "--ignore-not-found")
+				_, _ = utils.Run(cmd)
+			})
+
+			// The CR references a GitRepository that does not exist; the
+			// reconciler will surface a not-ready condition, but conversion
+			// happens at admission time and is what we are asserting here.
+			manifest := `---
+apiVersion: sops.stuttgart-things.com/v1alpha1
+kind: SopsSecret
+metadata:
+  name: conversion-probe
+  namespace: e2e-conversion
+spec:
+  source:
+    repositoryRef:
+      name: nonexistent-repo
+    path: prod/app/creds.enc.yaml
+  decryption:
+    keyRef:
+      name: dummy-age-key
+      key: age.agekey
+  data:
+    - key: DATABASE_URL
+      from: database_url
+`
+			By("applying the v1alpha1 SopsSecret (admission goes through the conversion webhook)")
+			out, err := kubectlApply(manifest)
+			Expect(err).NotTo(HaveOccurred(), "kubectl apply output: %s", out)
+
+			By("reading the same CR via the v1alpha2 endpoint to confirm sourceRef was populated by ConvertTo")
+			verifyConverted := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get",
+					"sopssecrets.v1alpha2.sops.stuttgart-things.com", "conversion-probe",
+					"-n", conversionNs,
+					"-o", "jsonpath={.spec.source.sourceRef.kind}/{.spec.source.sourceRef.name}",
+				)
+				kind, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(kind).To(Equal("GitRepository/nonexistent-repo"))
+			}
+			Eventually(verifyConverted, 30*time.Second).Should(Succeed())
+		})
+
+		It("should reconcile a v1alpha2 SopsSecret backed by an ObjectSource", func() {
+			const objNs = "e2e-objectsource"
+
+			By("creating the test namespace")
+			cmd := exec.Command("kubectl", "create", "ns", objNs)
+			_, _ = utils.Run(cmd)
+			DeferCleanup(func() {
+				cmd := exec.Command("kubectl", "delete", "ns", objNs, "--ignore-not-found")
+				_, _ = utils.Run(cmd)
+			})
+
+			By("generating a fresh age identity and a SOPS-encrypted YAML payload")
+			fixture := newE2EAge(GinkgoT())
+
+			By("deploying an in-cluster nginx Pod + Service that serves the encrypted YAML")
+			nginxYAML := nginxFixtureManifest(objNs, "encrypted-source", "shared.enc.yaml", fixture.Ciphertext)
+			out, err := kubectlApply(nginxYAML)
+			Expect(err).NotTo(HaveOccurred(), "kubectl apply nginx fixture: %s", out)
+
+			By("waiting for the nginx Pod to be Ready")
+			cmd = exec.Command("kubectl", "wait", "--for=condition=Ready",
+				"pod/encrypted-source", "-n", objNs, "--timeout=2m")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "nginx Pod did not become Ready")
+
+			By("creating the age private-key Secret")
+			out, err = kubectlApply(ageKeySecretManifest(objNs, "sops-age-key", fixture.Key.PrivateKey))
+			Expect(err).NotTo(HaveOccurred(), "kubectl apply age key: %s", out)
+
+			By("creating the ObjectSource")
+			objectSrcURL := fmt.Sprintf("http://encrypted-source.%s.svc:80/shared.enc.yaml", objNs)
+			objectSrc := fmt.Sprintf(`---
+apiVersion: sops.stuttgart-things.com/v1alpha2
+kind: ObjectSource
+metadata:
+  name: shared-secrets-https
+  namespace: %s
+spec:
+  url: %s
+  auth:
+    type: none
+`, objNs, objectSrcURL)
+			out, err = kubectlApply(objectSrc)
+			Expect(err).NotTo(HaveOccurred(), "kubectl apply ObjectSource: %s", out)
+
+			By("creating the v1alpha2 SopsSecret that consumes the ObjectSource")
+			sopsSecret := fmt.Sprintf(`---
+apiVersion: sops.stuttgart-things.com/v1alpha2
+kind: SopsSecret
+metadata:
+  name: app-creds-https
+  namespace: %s
+spec:
+  source:
+    sourceRef:
+      kind: ObjectSource
+      name: shared-secrets-https
+    path: shared.enc.yaml
+  decryption:
+    keyRef:
+      name: sops-age-key
+      key: age.agekey
+  data:
+    - key: DATABASE_URL
+      from: database_url
+    - key: API_TOKEN
+      from: api_token
+`, objNs)
+			out, err = kubectlApply(sopsSecret)
+			Expect(err).NotTo(HaveOccurred(), "kubectl apply SopsSecret: %s", out)
+
+			By("waiting for the target Secret to be reconciled with the decrypted values")
+			verifyTargetSecret := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "secret", "app-creds-https",
+					"-n", objNs,
+					"-o", "jsonpath={.data.DATABASE_URL}/{.data.API_TOKEN}",
+				)
+				out, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(out).NotTo(BeEmpty())
+
+				expectedURL := base64.StdEncoding.EncodeToString([]byte("postgres://app@db:5432/app"))
+				expectedTok := base64.StdEncoding.EncodeToString([]byte("e2e-token-xyz"))
+				g.Expect(out).To(Equal(expectedURL + "/" + expectedTok))
+			}
+			Eventually(verifyTargetSecret, 3*time.Minute, 2*time.Second).Should(Succeed())
+		})
 
 		// TODO: Customize the e2e test suite with scenarios specific to your project.
 		// Consider applying sample/CR(s) and check their status and/or verifying
