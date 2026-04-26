@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/conversion"
 
 	sopsv1alpha1 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha1"
 	sopsv1alpha2 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha2"
@@ -223,6 +224,11 @@ func main() {
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
+
+	// Register the conversion webhook for the v1alpha1 ↔ v1alpha2 hub.
+	// Without this the webhook Server starts but /convert is unhandled,
+	// so the apiserver gets connection refused when admitting v1alpha1 CRs.
+	mgr.GetWebhookServer().Register("/convert", conversion.NewWebhookHandler(mgr.GetScheme(), conversion.NewRegistry()))
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "Failed to set up health check")
