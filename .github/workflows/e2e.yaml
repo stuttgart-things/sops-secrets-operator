@@ -1,0 +1,56 @@
+---
+name: CI - E2E
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: e2e (kind + cert-manager)
+    runs-on: dagger-labda
+    timeout-minutes: 40
+    permissions:
+      contents: read
+
+    env:
+      KIND_VERSION: v0.24.0
+      KUBECTL_VERSION: v1.31.0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install kind + kubectl
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSLo "$HOME/.local/bin/kind" "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          curl -fsSLo "$HOME/.local/bin/kubectl" "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          chmod +x "$HOME/.local/bin/kind" "$HOME/.local/bin/kubectl"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/kind" version
+          "$HOME/.local/bin/kubectl" version --client
+
+      - name: Scrub leftover kind cluster
+        run: kind delete cluster --name sops-secrets-operator-test-e2e || true
+
+      - name: Run e2e
+        run: make test-e2e
+
+      - name: Cleanup kind cluster
+        if: always()
+        run: kind delete cluster --name sops-secrets-operator-test-e2e || true
