@@ -35,19 +35,15 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install kind
+      - name: Install kind + kubectl
         run: |
-          curl -fsSLo /tmp/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
-          chmod +x /tmp/kind
-          sudo install -m 0755 /tmp/kind /usr/local/bin/kind
-          kind version
-
-      - name: Install kubectl
-        run: |
-          curl -fsSLo /tmp/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
-          chmod +x /tmp/kubectl
-          sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
-          kubectl version --client
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSLo "$HOME/.local/bin/kind" "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          curl -fsSLo "$HOME/.local/bin/kubectl" "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          chmod +x "$HOME/.local/bin/kind" "$HOME/.local/bin/kubectl"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/kind" version
+          "$HOME/.local/bin/kubectl" version --client
 
       - name: Run e2e
         run: make test-e2e
