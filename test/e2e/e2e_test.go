@@ -79,19 +79,23 @@ var _ = Describe("Manager", Ordered, func() {
 	// and deleting the namespace.
 	AfterAll(func() {
 		By("cleaning up the curl pod for metrics")
-		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
+		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace, "--ignore-not-found", "--timeout=30s")
 		_, _ = utils.Run(cmd)
 
+		// Wrap cluster-side teardown with `timeout` so a stuck finalizer
+		// (controller deleted before it can drain a leftover CR) cannot
+		// hang the entire AfterAll. Errors are ignored — the cluster is
+		// nuked by `make cleanup-test-e2e` immediately after the suite.
 		By("undeploying the controller-manager")
-		cmd = exec.Command("make", "undeploy")
+		cmd = exec.Command("timeout", "60", "make", "undeploy", "ignore-not-found=true")
 		_, _ = utils.Run(cmd)
 
 		By("uninstalling CRDs")
-		cmd = exec.Command("make", "uninstall")
+		cmd = exec.Command("timeout", "60", "make", "uninstall", "ignore-not-found=true")
 		_, _ = utils.Run(cmd)
 
 		By("removing manager namespace")
-		cmd = exec.Command("kubectl", "delete", "ns", namespace)
+		cmd = exec.Command("kubectl", "delete", "ns", namespace, "--ignore-not-found", "--timeout=30s")
 		_, _ = utils.Run(cmd)
 	})
 
