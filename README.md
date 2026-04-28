@@ -2,6 +2,9 @@
 
 A Kubernetes operator that syncs [SOPS](https://github.com/getsops/sops)-encrypted secrets from Git into Kubernetes `Secret` resources — without depending on Flux, Argo, or any other GitOps stack.
 
+> **Contributing?** See [CONTRIBUTING.md](./CONTRIBUTING.md) for dev-setup
+> (envtest + Kind e2e), CI mapping, and the conventional-commits rule.
+
 ## Why another SOPS operator?
 
 `isindir/sops-secrets-operator` is the reference implementation in this space, but it deliberately does not pull from Git — it relies on Flux or Argo (or `kubectl apply`) to deliver encrypted CRs into the cluster. That works if you already run one of those stacks.
