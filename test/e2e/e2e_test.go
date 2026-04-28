@@ -78,31 +78,40 @@ var _ = Describe("Manager", Ordered, func() {
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
 	// and deleting the namespace.
 	AfterAll(func() {
-		// Bound every cluster-side teardown command with the OS `timeout`
-		// utility. A stuck finalizer (controller deleted before it can
-		// drain a leftover CR) makes both `kubectl delete` and its
-		// `--timeout=` flag unreliable — apiserver can be reachable yet
-		// the resource never finalizes. Errors are ignored: the kind
-		// cluster is destroyed by `make cleanup-test-e2e` immediately
-		// after the suite, so partial teardown is acceptable.
 		By("cleaning up the curl pod for metrics")
-		cmd := exec.Command("timeout", "--kill-after=5", "30",
-			"kubectl", "delete", "pod", "curl-metrics", "-n", namespace,
-			"--ignore-not-found", "--wait=false")
+		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics",
+			"-n", namespace, "--ignore-not-found")
 		_, _ = utils.Run(cmd)
 
+		// Drain every operator-managed CR across all namespaces *before*
+		// the controller goes away. If `make uninstall` deletes the CRDs
+		// first, the apiserver garbage-collects every CR — but the
+		// controller is already gone, no one strips the finalizer, and
+		// the CRDs stay Terminating waiting for it. With the controller
+		// still alive here, the finalizers run cleanly.
+		By("draining operator-managed CRs while the controller is still alive")
+		for _, kind := range []string{
+			"sopssecrets.sops.stuttgart-things.com",
+			"sopssecretmanifests.sops.stuttgart-things.com",
+			"inlinesopssecrets.sops.stuttgart-things.com",
+			"gitrepositories.sops.stuttgart-things.com",
+			"objectsources.sops.stuttgart-things.com",
+		} {
+			cmd = exec.Command("kubectl", "delete", kind, "--all",
+				"--all-namespaces", "--ignore-not-found", "--timeout=30s")
+			_, _ = utils.Run(cmd)
+		}
+
 		By("undeploying the controller-manager")
-		cmd = exec.Command("timeout", "--kill-after=5", "60", "make", "undeploy", "ignore-not-found=true")
+		cmd = exec.Command("make", "undeploy", "ignore-not-found=true")
 		_, _ = utils.Run(cmd)
 
 		By("uninstalling CRDs")
-		cmd = exec.Command("timeout", "--kill-after=5", "60", "make", "uninstall", "ignore-not-found=true")
+		cmd = exec.Command("make", "uninstall", "ignore-not-found=true")
 		_, _ = utils.Run(cmd)
 
 		By("removing manager namespace")
-		cmd = exec.Command("timeout", "--kill-after=5", "30",
-			"kubectl", "delete", "ns", namespace,
-			"--ignore-not-found", "--wait=false")
+		cmd = exec.Command("kubectl", "delete", "ns", namespace, "--ignore-not-found")
 		_, _ = utils.Run(cmd)
 	})
 
