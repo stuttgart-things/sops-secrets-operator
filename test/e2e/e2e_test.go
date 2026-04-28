@@ -113,6 +113,15 @@ var _ = Describe("Manager", Ordered, func() {
 		By("removing manager namespace")
 		cmd = exec.Command("kubectl", "delete", "ns", namespace, "--ignore-not-found")
 		_, _ = utils.Run(cmd)
+
+		// Cluster-scoped, so the namespace delete above won't remove it.
+		// Without this, the metrics-endpoint spec's `kubectl create` errors
+		// with "already exists" on the next run on a self-hosted runner
+		// that reuses the kind cluster.
+		By("removing metrics ClusterRoleBinding")
+		cmd = exec.Command("kubectl", "delete", "clusterrolebinding",
+			metricsRoleBindingName, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
 	})
 
 	// After each test, check for failures and collect logs, events,
@@ -196,10 +205,15 @@ var _ = Describe("Manager", Ordered, func() {
 
 		It("should ensure the metrics endpoint is serving metrics", func() {
 			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
-			cmd := exec.Command("kubectl", "create", "clusterrolebinding", metricsRoleBindingName,
-				"--clusterrole=sops-secrets-operator-metrics-reader",
-				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
-			)
+			// Idempotent apply rather than bare `create`: a previous failed run on
+			// a self-hosted runner can leave the CRB behind and `kubectl create`
+			// would error with "already exists".
+			cmd := exec.Command("sh", "-c", fmt.Sprintf(
+				"kubectl create clusterrolebinding %s "+
+					"--clusterrole=sops-secrets-operator-metrics-reader "+
+					"--serviceaccount=%s:%s --dry-run=client -o yaml | kubectl apply -f -",
+				metricsRoleBindingName, namespace, serviceAccountName,
+			))
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create ClusterRoleBinding")
 
