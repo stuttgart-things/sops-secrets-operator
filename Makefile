@@ -68,23 +68,28 @@ test: manifests generate fmt vet setup-envtest ## Run tests under -race.
 KIND_CLUSTER ?= sops-secrets-operator-test-e2e
 
 .PHONY: setup-test-e2e
-setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
+setup-test-e2e: ## Tear down any existing Kind cluster and create a fresh one for e2e tests
 	@command -v $(KIND) >/dev/null 2>&1 || { \
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
 	}
-	@case "$$($(KIND) get clusters)" in \
-		*"$(KIND_CLUSTER)"*) \
-			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
-		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
-	esac
+	@# Always start from a clean slate. The previous "skip if exists"
+	@# branch made local re-runs faster but let leftover state from a
+	@# prior failed run poison the next attempt — a recurring source of
+	@# flake on self-hosted runners (#43).
+	@echo "Tearing down any existing Kind cluster '$(KIND_CLUSTER)'..."
+	@$(KIND) delete cluster --name $(KIND_CLUSTER) >/dev/null 2>&1 || true
+	@echo "Creating Kind cluster '$(KIND_CLUSTER)'..."
+	@$(KIND) create cluster --name $(KIND_CLUSTER)
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e -timeout=30m ./test/e2e/ -v -ginkgo.v
-	$(MAKE) cleanup-test-e2e
+	@# `trap` ensures cleanup runs even when go test fails or the user
+	@# Ctrl-Cs the suite. Without it, a failing test left the kind cluster
+	@# behind and the next setup-test-e2e (pre-this-change) skipped
+	@# creation, inheriting the broken state.
+	@trap '$(MAKE) cleanup-test-e2e' EXIT INT TERM; \
+		KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e -timeout=30m ./test/e2e/ -v -ginkgo.v
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
