@@ -15,7 +15,12 @@ concurrency:
 jobs:
   e2e:
     name: e2e (kind + cert-manager)
-    runs-on: dagger-labda
+    # Dedicated kind-only runner provisioned in #43. Two runners exist
+    # (kind-testing-runner-1, kind-testing-runner-2); pick one with a
+    # `runs-on` array fallback. With `concurrency: cancel-in-progress`
+    # set above only one job runs at a time anyway, so the second runner
+    # is hot-spare / room for a sibling project.
+    runs-on: [self-hosted, kind-testing-runner-1]
     timeout-minutes: 40
     permissions:
       contents: read
@@ -48,9 +53,30 @@ jobs:
       - name: Scrub leftover kind cluster
         run: kind delete cluster --name sops-secrets-operator-test-e2e || true
 
+      - name: Pre-run diagnostics
+        run: |
+          echo "=== docker ps -a ==="
+          docker ps -a || true
+          echo "=== free -h ==="
+          free -h || true
+          echo "=== df -h /var/lib/docker / ==="
+          df -h /var/lib/docker / || true
+
       - name: Run e2e
         run: make test-e2e
 
       - name: Cleanup kind cluster
         if: always()
         run: kind delete cluster --name sops-secrets-operator-test-e2e || true
+
+      - name: Post-run diagnostics (on failure only)
+        if: failure()
+        run: |
+          echo "=== docker ps -a ==="
+          docker ps -a || true
+          echo "=== free -h ==="
+          free -h || true
+          echo "=== df -h /var/lib/docker / ==="
+          df -h /var/lib/docker / || true
+          echo "=== last 200 lines of dockerd journal ==="
+          journalctl -u docker --no-pager -n 200 || true
