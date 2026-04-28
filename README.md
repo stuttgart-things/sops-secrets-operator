@@ -114,7 +114,7 @@ metadata:
   namespace: apps
 spec:
   url: https://github.com/your-org/secrets.git
-  branch: main
+  branch: main          # or pin a commit/tag with `revision: <sha>` (overrides branch)
   interval: 5m
   auth:
     type: basic
@@ -227,6 +227,50 @@ kubectl annotate gitrepository platform-secrets \
 ```
 
 The reconciler compares the annotation value to `status.lastProcessedReconcileToken` and runs the full pipeline when they differ. On a source CR (`GitRepository` / `ObjectSource`), this drops the local cache and re-fetches upstream regardless of commit/ETag — useful when a git push has just landed and you don't want to wait for the next poll. On a consumer CR (`SopsSecret` / `SopsSecretManifest` / `InlineSopsSecret`), it just records the honored token: the consumer pipeline is already idempotent and re-reads the cached source content on every reconcile, so to force a fresh upstream fetch annotate the source.
+
+## Adoption, drift, and managed Secrets
+
+### Adopting a pre-existing Secret
+
+By default the operator refuses to overwrite a `Secret` it doesn't already own. A reconcile against an un-owned Secret fails with:
+
+```
+target Secret apps/app-creds exists but is not managed by this operator; set target.adopt=true to take over
+```
+
+To migrate an existing Secret under operator management, set `target.adopt: true` on the consumer CR (works on `SopsSecret`, `SopsSecretManifest`, and `InlineSopsSecret`):
+
+```yaml
+spec:
+  target:
+    name: app-creds      # optional; defaults to the CR name
+    adopt: true
+  # ...
+```
+
+On the next reconcile the operator stamps its labels/annotations onto the existing Secret and replaces its data with the source-derived data. Adoption is opt-in per CR — there is no global override.
+
+### Drift detection
+
+Every reconcile compares the source-derived content hash against `sops.stuttgart-things.com/content-hash` on the live Secret. If they differ — e.g. someone ran `kubectl edit secret app-creds` — the operator re-applies. Out-of-band edits do not survive the next reconcile; the only way to "freeze" data is to delete the owning CR (the finalizer cleans up the Secret too).
+
+### Owned-Secret labels and annotations
+
+Every `Secret` produced by the operator carries:
+
+| Key | Kind | Meaning |
+|---|---|---|
+| `sops.stuttgart-things.com/managed-by` | label | always `sops-secrets-operator` — used by adoption checks and `kubectl get -l` |
+| `sops.stuttgart-things.com/owner` | annotation | `<kind>/<namespace>/<name>` of the owning CR |
+| `sops.stuttgart-things.com/owner-uid` | annotation | UID of the owning CR — detects ownership transfer across CR kinds |
+| `sops.stuttgart-things.com/content-hash` | annotation | SHA-256 of the applied data; powers drift detection |
+| `sops.stuttgart-things.com/source-commit` | annotation | git commit (or ETag, for `ObjectSource`) the data was derived from |
+
+List everything the operator currently manages in the cluster:
+
+```sh
+kubectl get secret -A -l sops.stuttgart-things.com/managed-by=sops-secrets-operator
+```
 
 ## v1alpha1 backward compatibility
 
