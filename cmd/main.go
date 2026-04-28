@@ -225,10 +225,11 @@ func main() {
 	}
 	// +kubebuilder:scaffold:builder
 
-	// Register the conversion webhook for the v1alpha1 ↔ v1alpha2 hub.
-	// Without this the webhook Server starts but /convert is unhandled,
-	// so the apiserver gets connection refused when admitting v1alpha1 CRs.
-	mgr.GetWebhookServer().Register("/convert", conversion.NewWebhookHandler(mgr.GetScheme(), conversion.NewRegistry()))
+	// DELIBERATELY BROKEN — this branch verifies CI e2e catches regressions.
+	// The conversion-webhook registration below is commented out so /convert
+	// returns connection-refused for v1alpha1 admissions. DO NOT MERGE.
+	// mgr.GetWebhookServer().Register("/convert", conversion.NewWebhookHandler(mgr.GetScheme(), conversion.NewRegistry()))
+	_ = conversion.NewRegistry
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "Failed to set up health check")
