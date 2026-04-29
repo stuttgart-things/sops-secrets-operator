@@ -209,6 +209,22 @@ Each CR has status conditions you can watch with `kubectl get -o jsonpath='{.sta
 - `SopsSecret` / `SopsSecretManifest`: `SourceReady`, `Decrypted`, `Applied`
 - `InlineSopsSecret`: `Decrypted`, `Applied`
 
+### OpenTelemetry tracing (optional)
+
+Set the standard OTLP environment variables on the manager Pod and reconciles will emit one trace per CR with `auth` / `fetch` / `decrypt` / `apply` child spans:
+
+```yaml
+env:
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: http://otel-collector.observability:4317
+  - name: OTEL_EXPORTER_OTLP_PROTOCOL
+    value: grpc
+  - name: OTEL_SERVICE_NAME
+    value: sops-secrets-operator
+```
+
+Without these vars set, a no-op tracer provider is installed and there is no overhead. Spans carry CR identifiers, `sourceRef`, the observed commit/ETag, and a content-hash fingerprint — never plaintext data or key material. See [SECURITY.md](./SECURITY.md#tracing-emits-no-plaintext-or-key-material) for the full attribute list.
+
 ## Samples
 
 Runnable examples in [`config/samples/`](./config/samples):

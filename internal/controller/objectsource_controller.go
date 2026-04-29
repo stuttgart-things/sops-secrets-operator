@@ -56,8 +56,8 @@ type ObjectSourceReconciler struct {
 
 func (r *ObjectSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithValues("objectsource", req.NamespacedName)
-	setStage, finish := trackReconcile("ObjectSource")
-	defer finish()
+	ctx, t := trackReconcile(ctx, "ObjectSource", req.Namespace, req.Name)
+	defer t.Finish()
 
 	var os sopsv1alpha2.ObjectSource
 	if err := r.Get(ctx, req.NamespacedName, &os); err != nil {
@@ -88,7 +88,7 @@ func (r *ObjectSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	hasBucket := os.Spec.Bucket != nil
 	if hasURL == hasBucket {
 		err := fmt.Errorf("exactly one of spec.url or spec.bucket must be set")
-		setStage(StageAuth)
+		t.Fail(StageAuth, err)
 		setObjectFailure(&os, ObjectConditionAuthResolved, "InvalidSpec", err.Error())
 		if uerr := r.Status().Update(ctx, &os); uerr != nil {
 			return ctrl.Result{}, uerr
@@ -96,10 +96,11 @@ func (r *ObjectSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{RequeueAfter: retryAfter}, nil
 	}
 
-	fetcher, mode, err := r.buildFetcher(ctx, &os)
+	authCtx := t.Stage(ctx, StageAuth)
+	fetcher, mode, err := r.buildFetcher(authCtx, &os)
 	if err != nil {
 		log.Error(err, "auth resolution failed")
-		setStage(StageAuth)
+		t.Fail(StageAuth, err)
 		setObjectFailure(&os, ObjectConditionAuthResolved, "AuthFailed", err.Error())
 		if uerr := r.Status().Update(ctx, &os); uerr != nil {
 			return ctrl.Result{}, uerr
@@ -108,10 +109,11 @@ func (r *ObjectSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 	setCondition(&os.Status.Conditions, ObjectConditionAuthResolved, metav1.ConditionTrue, "AuthOK", "auth resolved")
 
-	etag, err := r.Registry.EnsureObjectCached(ctx, req.NamespacedName, mode, fetcher)
+	fetchCtx := t.Stage(ctx, StageFetch)
+	etag, err := r.Registry.EnsureObjectCached(fetchCtx, req.NamespacedName, mode, fetcher)
 	if err != nil {
 		log.Error(err, "fetch failed")
-		setStage(StageFetch)
+		t.Fail(StageFetch, err)
 		setCondition(&os.Status.Conditions, ObjectConditionSourceReady, metav1.ConditionFalse, "FetchFailed", err.Error())
 		os.Status.CacheReady = false
 		if uerr := r.Status().Update(ctx, &os); uerr != nil {
@@ -119,6 +121,7 @@ func (r *ObjectSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 		return ctrl.Result{RequeueAfter: retryAfter}, nil
 	}
+	t.SetCommit(etag)
 
 	now := metav1.NewTime(time.Now())
 	os.Status.LastSyncedETag = etag
