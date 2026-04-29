@@ -51,8 +51,8 @@ type InlineSopsSecretReconciler struct {
 
 func (r *InlineSopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithValues("inlinesopssecret", req.NamespacedName)
-	setStage, finish := trackReconcile("InlineSopsSecret")
-	defer finish()
+	ctx, t := trackReconcile(ctx, "InlineSopsSecret", req.Namespace, req.Name)
+	defer t.Finish()
 
 	var is sopsv1alpha1.InlineSopsSecret
 	if err := r.Get(ctx, req.NamespacedName, &is); err != nil {
@@ -82,17 +82,18 @@ func (r *InlineSopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	// Resolve age key and decrypt the inline payload.
-	ageKey, err := keyresolve.Age(ctx, r.Client, is.Namespace, keyresolve.SecretKeyRef{
+	decryptCtx := t.Stage(ctx, StageDecrypt)
+	ageKey, err := keyresolve.Age(decryptCtx, r.Client, is.Namespace, keyresolve.SecretKeyRef{
 		Name: is.Spec.Decryption.KeyRef.Name,
 		Key:  is.Spec.Decryption.KeyRef.Key,
 	})
 	if err != nil {
-		setStage(StageDecrypt)
+		t.Fail(StageDecrypt, err)
 		return r.failInlineStatus(ctx, &is, sopsv1alpha1.ConditionDecrypted, "KeyResolveFailed", err.Error())
 	}
 	plaintext, err := decrypt.DecryptAge([]byte(is.Spec.EncryptedYAML), inlineSopsDecryptPath, ageKey)
 	if err != nil {
-		setStage(StageDecrypt)
+		t.Fail(StageDecrypt, err)
 		return r.failInlineStatus(ctx, &is, sopsv1alpha1.ConditionDecrypted, "DecryptFailed", err.Error())
 	}
 
@@ -101,20 +102,22 @@ func (r *InlineSopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	case sopsv1alpha1.InlineModeMapping:
 		flat, err := transform.ParseFlatYAML(plaintext)
 		if err != nil {
-			setStage(StageDecrypt)
+			t.Fail(StageDecrypt, err)
 			return r.failInlineStatus(ctx, &is, sopsv1alpha1.ConditionDecrypted, "ParseFailed", err.Error())
 		}
 		data, err := transform.ApplyMapping(flat, convertInlineDataMappings(is.Spec.Data))
 		if err != nil {
-			setStage(StageDecrypt)
+			t.Fail(StageDecrypt, err)
 			return r.failInlineStatus(ctx, &is, sopsv1alpha1.ConditionDecrypted, "MappingFailed", err.Error())
 		}
 		setCondition(&is.Status.Conditions, sopsv1alpha1.ConditionDecrypted, metav1.ConditionTrue, "Decrypted", "decryption + mapping ok")
 
 		hash := transform.HashSecretData(data)
-		if err := r.applyInlineMappingSecret(ctx, &is, data, hash); err != nil {
+		t.SetContentHash(hash)
+		applyCtx := t.Stage(ctx, StageApply)
+		if err := r.applyInlineMappingSecret(applyCtx, &is, data, hash); err != nil {
 			log.Error(err, "apply inline mapping secret failed")
-			setStage(StageApply)
+			t.Fail(StageApply, err)
 			return r.failInlineStatus(ctx, &is, sopsv1alpha1.ConditionApplied, "ApplyFailed", err.Error())
 		}
 		setCondition(&is.Status.Conditions, sopsv1alpha1.ConditionApplied, metav1.ConditionTrue, "Applied",
@@ -124,7 +127,7 @@ func (r *InlineSopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	case sopsv1alpha1.InlineModeManifest:
 		parsed, err := transform.ParseManifest(plaintext)
 		if err != nil {
-			setStage(StageDecrypt)
+			t.Fail(StageDecrypt, err)
 			return r.failInlineStatus(ctx, &is, sopsv1alpha1.ConditionDecrypted, "ParseFailed", err.Error())
 		}
 		transform.NormalizeSecretData(parsed)
@@ -134,9 +137,9 @@ func (r *InlineSopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			name = parsed.Name
 		}
 		if name == "" {
-			setStage(StageDecrypt)
-			return r.failInlineStatus(ctx, &is, sopsv1alpha1.ConditionDecrypted, "NameMissing",
-				"manifest has no metadata.name and spec.target.name is not set")
+			err := fmt.Errorf("manifest has no metadata.name and spec.target.name is not set")
+			t.Fail(StageDecrypt, err)
+			return r.failInlineStatus(ctx, &is, sopsv1alpha1.ConditionDecrypted, "NameMissing", err.Error())
 		}
 		ns := is.Spec.Target.Namespace
 		if ns == "" {
@@ -145,9 +148,11 @@ func (r *InlineSopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		setCondition(&is.Status.Conditions, sopsv1alpha1.ConditionDecrypted, metav1.ConditionTrue, "Decrypted", "decryption + validation ok")
 
 		hash := transform.HashManifestSecret(parsed)
-		if err := r.applyInlineManifestSecret(ctx, &is, parsed, name, ns, hash); err != nil {
+		t.SetContentHash(hash)
+		applyCtx := t.Stage(ctx, StageApply)
+		if err := r.applyInlineManifestSecret(applyCtx, &is, parsed, name, ns, hash); err != nil {
 			log.Error(err, "apply inline manifest secret failed")
-			setStage(StageApply)
+			t.Fail(StageApply, err)
 			return r.failInlineStatus(ctx, &is, sopsv1alpha1.ConditionApplied, "ApplyFailed", err.Error())
 		}
 		setCondition(&is.Status.Conditions, sopsv1alpha1.ConditionApplied, metav1.ConditionTrue, "Applied",
@@ -155,9 +160,9 @@ func (r *InlineSopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		is.Status.LastAppliedHash = hash
 
 	default:
-		setStage(StageDecrypt)
-		return r.failInlineStatus(ctx, &is, sopsv1alpha1.ConditionDecrypted, "InvalidMode",
-			fmt.Sprintf("unknown mode %q", is.Spec.Mode))
+		err := fmt.Errorf("unknown mode %q", is.Spec.Mode)
+		t.Fail(StageDecrypt, err)
+		return r.failInlineStatus(ctx, &is, sopsv1alpha1.ConditionDecrypted, "InvalidMode", err.Error())
 	}
 
 	is.Status.LastProcessedReconcileToken = is.Annotations[ReconcileRequestAnnotation]

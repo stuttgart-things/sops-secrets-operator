@@ -61,8 +61,8 @@ type SopsSecretReconciler struct {
 
 func (r *SopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithValues("sopssecret", req.NamespacedName)
-	setStage, finish := trackReconcile("SopsSecret")
-	defer finish()
+	ctx, t := trackReconcile(ctx, "SopsSecret", req.Namespace, req.Name)
+	defer t.Finish()
 
 	var ss sopsv1alpha2.SopsSecret
 	if err := r.Get(ctx, req.NamespacedName, &ss); err != nil {
@@ -91,45 +91,52 @@ func (r *SopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, nil
 	}
 
+	t.SetSourceRef(string(ss.Spec.Source.SourceRef.Kind), ss.Spec.Source.SourceRef.Name)
+
 	// Resolve the source CR by sourceRef.Kind, fetch the encrypted bytes
 	// plus a "revision" string (commit SHA for git, ETag for object).
-	content, revision, srcErr := r.fetchSource(ctx, &ss)
+	fetchCtx := t.Stage(ctx, StageFetch)
+	content, revision, srcErr := r.fetchSource(fetchCtx, &ss)
 	if srcErr != nil {
-		setStage(StageFetch)
+		t.Fail(StageFetch, srcErr)
 		return r.failStatus(ctx, &ss, sopsv1alpha2.ConditionSourceReady, srcErr.reason, srcErr.msg)
 	}
+	t.SetCommit(revision)
 	setCondition(&ss.Status.Conditions, sopsv1alpha2.ConditionSourceReady, metav1.ConditionTrue, "Ready", "source is ready")
 
-	ageKey, err := keyresolve.Age(ctx, r.Client, ss.Namespace, keyresolve.SecretKeyRef{
+	decryptCtx := t.Stage(ctx, StageDecrypt)
+	ageKey, err := keyresolve.Age(decryptCtx, r.Client, ss.Namespace, keyresolve.SecretKeyRef{
 		Name: ss.Spec.Decryption.KeyRef.Name,
 		Key:  ss.Spec.Decryption.KeyRef.Key,
 	})
 	if err != nil {
-		setStage(StageDecrypt)
+		t.Fail(StageDecrypt, err)
 		return r.failStatus(ctx, &ss, sopsv1alpha2.ConditionDecrypted, "KeyResolveFailed", err.Error())
 	}
 	plaintext, err := decrypt.DecryptAge(content, ss.Spec.Source.Path, ageKey)
 	if err != nil {
-		setStage(StageDecrypt)
+		t.Fail(StageDecrypt, err)
 		return r.failStatus(ctx, &ss, sopsv1alpha2.ConditionDecrypted, "DecryptFailed", err.Error())
 	}
 
 	flat, err := transform.ParseFlatYAML(plaintext)
 	if err != nil {
-		setStage(StageDecrypt)
+		t.Fail(StageDecrypt, err)
 		return r.failStatus(ctx, &ss, sopsv1alpha2.ConditionDecrypted, "ParseFailed", err.Error())
 	}
 	data, err := transform.ApplyMapping(flat, convertSpecDataMappings(ss.Spec.Data))
 	if err != nil {
-		setStage(StageDecrypt)
+		t.Fail(StageDecrypt, err)
 		return r.failStatus(ctx, &ss, sopsv1alpha2.ConditionDecrypted, "MappingFailed", err.Error())
 	}
 	setCondition(&ss.Status.Conditions, sopsv1alpha2.ConditionDecrypted, metav1.ConditionTrue, "Decrypted", "decryption + mapping ok")
 
 	hash := transform.HashSecretData(data)
-	if err := r.applyTargetSecret(ctx, &ss, data, hash, revision); err != nil {
+	t.SetContentHash(hash)
+	applyCtx := t.Stage(ctx, StageApply)
+	if err := r.applyTargetSecret(applyCtx, &ss, data, hash, revision); err != nil {
 		log.Error(err, "apply target secret failed")
-		setStage(StageApply)
+		t.Fail(StageApply, err)
 		return r.failStatus(ctx, &ss, sopsv1alpha2.ConditionApplied, "ApplyFailed", err.Error())
 	}
 	setCondition(&ss.Status.Conditions, sopsv1alpha2.ConditionApplied, metav1.ConditionTrue, "Applied",

@@ -66,6 +66,20 @@ Treat write access to the referenced repository as equivalent to namespace-write
 
 Without `spec.revision`, `GitRepository` follows branch HEAD — which means new commits to the branch are picked up on the next poll. For stable pinning, set `spec.revision` to a commit SHA or tag. This also gives you a clean audit trail via `status.lastSyncedCommit`.
 
+### Tracing emits no plaintext or key material
+
+When the operator is configured to export OpenTelemetry traces (`OTEL_EXPORTER_OTLP_ENDPOINT` set), spans carry only resource identifiers and post-decrypt fingerprints:
+
+- `sops.kind`, `sops.namespace`, `sops.name` — the CR being reconciled
+- `sops.source.kind`, `sops.source.name` — its `sourceRef`
+- `sops.commit` — the git commit SHA or object ETag observed at fetch time
+- `sops.content_hash` — a SHA-256 fingerprint of the decrypted Secret data
+- `sops.stage` — `auth` / `fetch` / `decrypt` / `apply` on child spans
+
+Decrypted plaintext, age private keys, basic-auth or SSH credentials, and S3 access keys are **never** placed on spans. Error messages on spans come from the same paths that already surface in `status.conditions[].message`, so they may include source or upstream library text but not key material.
+
+Because spans expose CR identifiers, namespace names, and source URLs/SHAs to whatever collector you target, route traces to a destination governed by the same operators-only access controls you apply to the operator's logs.
+
 ## Reporting a vulnerability
 
 Please email [phermann1988@gmail.com](mailto:phermann1988@gmail.com) with details. Do not open a public issue for undisclosed vulnerabilities.

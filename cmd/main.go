@@ -17,9 +17,11 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -40,8 +42,13 @@ import (
 	sopsv1alpha2 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha2"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/controller"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/source"
+	"github.com/stuttgart-things/sops-secrets-operator/internal/tracing"
 	// +kubebuilder:scaffold:imports
 )
+
+// version is the operator version reported as service.version on emitted
+// OTel spans. Override at build time with -ldflags "-X main.version=…".
+var version = "dev"
 
 var (
 	scheme   = runtime.NewScheme()
@@ -90,6 +97,22 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// Tracing is opt-in via OTEL_EXPORTER_OTLP_ENDPOINT (or _TRACES_ENDPOINT).
+	// With no endpoint configured, Setup installs a no-op TracerProvider so
+	// reconciler instrumentation stays free.
+	tracerShutdown, err := tracing.Setup(context.Background(), version)
+	if err != nil {
+		setupLog.Error(err, "Failed to set up tracing")
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tracerShutdown(shutdownCtx); err != nil {
+			setupLog.Error(err, "tracer shutdown failed")
+		}
+	}()
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
