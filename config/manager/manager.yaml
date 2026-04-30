@@ -93,7 +93,15 @@ spec:
           requests:
             cpu: 10m
             memory: 64Mi
-        volumeMounts: []
-      volumes: []
+        volumeMounts:
+        - name: cache
+          mountPath: /home/nonroot/.cache
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: cache
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10

@@ -319,6 +319,66 @@ make test                 # run unit + envtest (fetches envtest binaries)
 make run                  # run the manager against the current kubecontext
 ```
 
+### Dev deployment to an existing cluster
+
+For testing against a remote cluster (e.g. a shared k3s management cluster) instead of `kubectl apply -k …`, deploy a pinned release image with kustomize:
+
+```sh
+# Point at the target cluster
+export KUBECONFIG=/path/to/your/kubeconfig
+
+# Apply CRDs, RBAC, controller Deployment, webhook Service, and cert-manager Issuer/Certificate
+make deploy IMG=ghcr.io/stuttgart-things/sops-secrets-operator:v0.7.2
+
+# Verify rollout
+kubectl -n sops-secrets-operator-system rollout status deploy/sops-secrets-operator-controller-manager
+kubectl -n sops-secrets-operator-system get pods
+```
+
+Tear down with `make undeploy` (controller + webhook) and `make uninstall` (CRDs).
+
+#### Cluster prerequisites
+
+- **cert-manager** must be installed cluster-wide. The default kustomize overlay (`config/default`) wires a self-signed `Issuer` + `Certificate` to serve the conversion webhook for `SopsSecret` / `SopsSecretManifest` (v1alpha1 ↔ v1beta1).
+- The node(s) must be able to pull from `ghcr.io`. The published image is public.
+- Ensure no other controller is already managing the `sops.stuttgart-things.com` CRDs in the cluster.
+
+#### Configuration after deploy
+
+The controller is deployed without any age decryption key — apply yours after the rollout. Generate or reuse an age key, then create a `Secret` **in the same namespace as the CRs that will consume it** (the operator looks up `decryption.keyRef` in the CR's own namespace):
+
+```sh
+kubectl -n <crs-namespace> create secret generic sops-age \
+  --from-file=age.agekey=/path/to/age.agekey
+```
+
+Reference it from each `SopsSecret` / `SopsSecretManifest` / `InlineSopsSecret` via:
+
+```yaml
+spec:
+  decryption:
+    keyRef:
+      name: sops-age
+      key: age.agekey
+```
+
+See [Quick start](#quick-start) for the full end-to-end flow (key, encryption, `GitRepository`, `SopsSecret`).
+
+#### Customizing the deploy
+
+`make deploy` runs `kustomize build config/default | kubectl apply -f -`. To override values without forking:
+
+- **Image / tag:** `make deploy IMG=ghcr.io/<org>/sops-secrets-operator:<tag>`
+- **Namespace, replicas, resources, env:** create an overlay that patches `config/manager/manager.yaml`
+- **Metrics / Prometheus / NetworkPolicy:** uncomment the corresponding entries in `config/default/kustomization.yaml`
+
+To render the manifest without applying (useful for GitOps pipelines):
+
+```sh
+make build-installer IMG=ghcr.io/stuttgart-things/sops-secrets-operator:v0.7.2
+# writes dist/install.yaml
+```
+
 The controllers are scaffolded with [kubebuilder v4](https://book.kubebuilder.io/). Key packages:
 
 - `internal/git/` — go-git wrapper with revision pinning + safe cache directory
