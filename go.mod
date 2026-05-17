@@ -7,7 +7,7 @@ require (
 	github.com/getsops/sops/v3 v3.13.0
 	github.com/go-git/go-git/v5 v5.18.0
 	github.com/google/go-cmp v0.7.0
-	github.com/minio/minio-go/v7 v7.0.100
+	github.com/minio/minio-go/v7 v7.1.0
 	github.com/onsi/ginkgo/v2 v2.28.3
 	github.com/onsi/gomega v1.40.0
 	github.com/prometheus/client_golang v1.23.2
@@ -175,6 +175,7 @@ require (
 	github.com/urfave/cli v1.22.17 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xanzy/ssh-agent v0.3.3 // indirect
+	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.mongodb.org/mongo-driver v1.17.9 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/detectors/gcp v1.43.0 // indirect
