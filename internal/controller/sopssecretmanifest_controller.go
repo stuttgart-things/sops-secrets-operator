@@ -154,7 +154,9 @@ func (r *SopsSecretManifestReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if err := r.Status().Update(ctx, &sm); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, nil
+	// Re-apply periodically: the target Secret is not watched, so this is the
+	// only thing that restores it if it is removed out of band (#83).
+	return ctrl.Result{RequeueAfter: resyncAfter}, nil
 }
 
 func (r *SopsSecretManifestReconciler) fetchManifestSource(ctx context.Context, sm *sopsv1alpha2.SopsSecretManifest) ([]byte, string, *sourceFetchError) {
