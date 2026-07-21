@@ -16,7 +16,13 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
-    runs-on: dagger-labul
+    # dagger-labda rather than dagger-labul: the labul runner (`shuffle`) is a
+    # single machine, and while it was offline every release queued behind it
+    # indefinitely — two runs sat in `queued` for hours with no signal that
+    # anything was wrong. labda carries two runners under this label, so one
+    # being down no longer stalls releases. Nothing in this job is lab-specific:
+    # it needs git, dagger, docker and gh, and authenticates with GITHUB_TOKEN.
+    runs-on: dagger-labda
     environment: k8s
 
     steps:
