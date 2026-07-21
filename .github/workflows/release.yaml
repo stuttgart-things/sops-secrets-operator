@@ -11,6 +11,18 @@ permissions:
   contents: write
   packages: write
 
+# Release fires on both workflow_run completion and workflow_dispatch, so
+# several runs can otherwise be in flight at once. When they overlap they race
+# on `git push --tags`: the loser dies with "cannot lock ref 'refs/tags/vX':
+# reference already exists" and never reaches its publish steps, leaving a tag
+# and a GitHub release with no image behind them. Seen on v0.8.5 (#86).
+#
+# cancel-in-progress is deliberately false: cancelling a run midway is exactly
+# how a release ends up half published. Queue instead.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     if: >-
