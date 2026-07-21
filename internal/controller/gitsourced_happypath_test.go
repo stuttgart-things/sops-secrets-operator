@@ -392,5 +392,72 @@ stringData:
 			err := k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: "manifest-name"}, &corev1.Secret{})
 			Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		})
+
+		// Regression for #83: a successful reconcile used to be terminal, so a
+		// target Secret deleted out of band never came back while the CR still
+		// reported Applied=True. Nothing watches the Secret (target.namespace
+		// may differ from the CR's, so ownerReferences do not apply), which
+		// makes the periodic requeue the only thing that restores it.
+		It("requeues after a successful apply and re-creates a deleted target Secret", func() {
+			prefix := uniq("sm-resync")
+			manifest := []byte(`apiVersion: v1
+kind: Secret
+metadata:
+  name: resync-target
+type: Opaque
+stringData:
+  token: keep-me
+`)
+			fx := newGitFixture(prefix, "sec.enc.yaml", manifest)
+
+			cr := &sopsv1alpha2.SopsSecretManifest{
+				ObjectMeta: metav1.ObjectMeta{Name: prefix, Namespace: namespace},
+				Spec: sopsv1alpha2.SopsSecretManifestSpec{
+					Source: gitSourceRef(fx.repoCRRef, "sec.enc.yaml"),
+					Decryption: sopsv1alpha2.DecryptionSpec{
+						KeyRef: sopsv1alpha2.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cr)).To(Succeed())
+
+			reconr := &SopsSecretManifestReconciler{
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
+				Registry: fx.registry,
+			}
+			req := reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: namespace, Name: prefix},
+			}
+
+			var res reconcile.Result
+			for range 2 {
+				var err error
+				res, err = reconr.Reconcile(ctx, req)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// The successful reconcile must schedule another one.
+			Expect(res.RequeueAfter).To(Equal(resyncAfter))
+
+			targetKey := types.NamespacedName{Namespace: namespace, Name: "resync-target"}
+			Expect(k8sClient.Get(ctx, targetKey, &corev1.Secret{})).To(Succeed())
+
+			// Drop the Secret the way an out-of-band delete would.
+			Expect(k8sClient.Delete(ctx, &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: "resync-target"},
+			})).To(Succeed())
+			Expect(apierrors.IsNotFound(
+				k8sClient.Get(ctx, targetKey, &corev1.Secret{}),
+			)).To(BeTrue())
+
+			// What the requeue will do when it fires.
+			_, err := reconr.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			restored := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, targetKey, restored)).To(Succeed())
+			Expect(string(restored.Data["token"])).To(Equal("keep-me"))
+		})
 	})
 })

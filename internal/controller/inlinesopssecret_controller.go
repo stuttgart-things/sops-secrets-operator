@@ -170,7 +170,10 @@ func (r *InlineSopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err := r.Status().Update(ctx, &is); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, nil
+	// Re-apply periodically. This controller has no source watch at all, so
+	// before this it went permanently idle after the first successful apply
+	// and a Secret removed out of band never returned (#83).
+	return ctrl.Result{RequeueAfter: resyncAfter}, nil
 }
 
 func convertInlineDataMappings(in []sopsv1alpha1.DataMapping) []transform.DataMapping {

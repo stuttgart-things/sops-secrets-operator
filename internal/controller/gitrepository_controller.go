@@ -42,6 +42,16 @@ const (
 	// retryAfter is the backoff between retries when a reconcile fails.
 	retryAfter = 30 * time.Second
 
+	// resyncAfter is how long a secret-producing reconciler waits before
+	// re-applying an object that already succeeded.
+	//
+	// Without it a successful reconcile is terminal: nothing watches the
+	// Secret we write (it may live in another namespace via target.namespace,
+	// so ownerReferences — and therefore Owns() — do not apply), so a Secret
+	// deleted out of band never comes back while the CR still reports
+	// Applied=True. See #83.
+	resyncAfter = 5 * time.Minute
+
 	// GitRepoAuthSecretIndex is a field index on GitRepository pointing at
 	// the name of its auth secret reference. Used to enqueue GitRepositories
 	// when a referenced Secret changes.

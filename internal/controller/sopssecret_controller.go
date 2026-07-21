@@ -149,7 +149,9 @@ func (r *SopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err := r.Status().Update(ctx, &ss); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, nil
+	// Re-apply periodically: the target Secret is not watched, so this is the
+	// only thing that restores it if it is removed out of band (#83).
+	return ctrl.Result{RequeueAfter: resyncAfter}, nil
 }
 
 // sourceFetchError carries a stable reason + message for failStatus.
