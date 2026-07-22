@@ -12,6 +12,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -27,14 +28,17 @@ import (
 
 	sopsv1alpha2 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha2"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/object"
+	"github.com/stuttgart-things/sops-secrets-operator/internal/secretref"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/source"
 )
 
 const (
 	// ObjectSourceAuthSecretIndex is a field index on ObjectSource pointing
-	// at the name of its auth secret reference. Used to enqueue ObjectSources
-	// when a referenced Secret changes.
-	ObjectSourceAuthSecretIndex = ".spec.auth.secretRef.name"
+	// at the auth Secret it resolves to, as "<namespace>/<name>". Used to
+	// enqueue ObjectSources when that Secret changes.
+	//
+	// Namespace-qualified since #48, as for GitRepository.
+	ObjectSourceAuthSecretIndex = ".spec.auth.secretRef"
 
 	// ObjectConditionSourceReady is the source-ready condition type for
 	// ObjectSource, mirroring GitRepository's naming.
@@ -43,11 +47,25 @@ const (
 	ObjectConditionAuthResolved = "AuthResolved"
 )
 
+// objectAuthRef reads the CR's auth reference into the neutral form the
+// resolver takes. A nil secretRef yields the zero Ref, which the resolver
+// reads as "fall back to the operator's default, if any".
+func objectAuthRef(os *sopsv1alpha2.ObjectSource) secretref.Ref {
+	if os.Spec.Auth == nil || os.Spec.Auth.SecretRef == nil {
+		return secretref.Ref{}
+	}
+	return secretref.Ref{
+		Namespace: os.Spec.Auth.SecretRef.Namespace,
+		Name:      os.Spec.Auth.SecretRef.Name,
+	}
+}
+
 // ObjectSourceReconciler reconciles ObjectSource (v1alpha2) objects.
 type ObjectSourceReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Registry *source.Registry
+	CredentialPolicy
 }
 
 // +kubebuilder:rbac:groups=sops.stuttgart-things.com,resources=objectsources,verbs=get;list;watch;create;update;patch;delete
@@ -157,12 +175,18 @@ func (r *ObjectSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 func (r *ObjectSourceReconciler) buildFetcher(ctx context.Context, os *sopsv1alpha2.ObjectSource) (object.Fetcher, source.ObjectMode, error) {
 	var sec *corev1.Secret
 	if os.Spec.Auth != nil && os.Spec.Auth.Type != sopsv1alpha2.ObjectAuthNone {
-		if os.Spec.Auth.SecretRef == nil {
-			return nil, 0, fmt.Errorf("auth type %q requires secretRef", os.Spec.Auth.Type)
+		res, err := r.SecretRefs.Resolve(os.Namespace, objectAuthRef(os), r.GlobalObjectAuth)
+		if err != nil {
+			if errors.Is(err, secretref.ErrNoReference) {
+				return nil, 0, fmt.Errorf(
+					"auth type %q requires secretRef, and the operator has no --global-object-auth-secret configured",
+					os.Spec.Auth.Type)
+			}
+			return nil, 0, err
 		}
 		var s corev1.Secret
-		if err := r.Get(ctx, client.ObjectKey{Namespace: os.Namespace, Name: os.Spec.Auth.SecretRef.Name}, &s); err != nil {
-			return nil, 0, fmt.Errorf("get auth secret: %w", err)
+		if err := r.Get(ctx, res.ObjectKey, &s); err != nil {
+			return nil, 0, fmt.Errorf("get auth secret %s/%s: %w", res.Namespace, res.Name, err)
 		}
 		sec = &s
 	}
@@ -236,10 +260,10 @@ func (r *ObjectSourceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		ObjectSourceAuthSecretIndex,
 		func(obj client.Object) []string {
 			o := obj.(*sopsv1alpha2.ObjectSource)
-			if o.Spec.Auth == nil || o.Spec.Auth.SecretRef == nil {
+			if o.Spec.Auth == nil || o.Spec.Auth.Type == sopsv1alpha2.ObjectAuthNone {
 				return nil
 			}
-			return []string{o.Spec.Auth.SecretRef.Name}
+			return r.SecretRefs.IndexValues(o.Namespace, objectAuthRef(o), r.GlobalObjectAuth)
 		},
 	); err != nil {
 		return err
@@ -253,10 +277,10 @@ func (r *ObjectSourceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func (r *ObjectSourceReconciler) mapSecretToObjectSources(ctx context.Context, obj client.Object) []reconcile.Request {
+	// Cluster-wide on purpose; see mapSecretToGitRepos.
 	var list sopsv1alpha2.ObjectSourceList
 	if err := r.List(ctx, &list,
-		client.InNamespace(obj.GetNamespace()),
-		client.MatchingFields{ObjectSourceAuthSecretIndex: obj.GetName()},
+		client.MatchingFields{ObjectSourceAuthSecretIndex: secretref.IndexKey(obj.GetNamespace(), obj.GetName())},
 	); err != nil {
 		return nil
 	}

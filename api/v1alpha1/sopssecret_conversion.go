@@ -32,12 +32,7 @@ func (src *SopsSecret) ConvertTo(dstRaw conversion.Hub) error {
 			},
 			Path: src.Spec.Source.Path,
 		},
-		Decryption: v1alpha2.DecryptionSpec{
-			KeyRef: v1alpha2.SecretKeyRef{
-				Name: src.Spec.Decryption.KeyRef.Name,
-				Key:  src.Spec.Decryption.KeyRef.Key,
-			},
-		},
+		Decryption: convertDecryptionTo(src.Spec.Decryption),
 		Target: v1alpha2.MappingTarget{
 			Name:      src.Spec.Target.Name,
 			Namespace: src.Spec.Target.Namespace,
@@ -72,12 +67,7 @@ func (dst *SopsSecret) ConvertFrom(srcRaw conversion.Hub) error {
 			RepositoryRef: LocalObjectReference{Name: src.Spec.Source.SourceRef.Name},
 			Path:          src.Spec.Source.Path,
 		},
-		Decryption: DecryptionSpec{
-			KeyRef: SecretKeyRef{
-				Name: src.Spec.Decryption.KeyRef.Name,
-				Key:  src.Spec.Decryption.KeyRef.Key,
-			},
-		},
+		Decryption: convertDecryptionFrom(src.Spec.Decryption),
 		Target: MappingTarget{
 			Name:      src.Spec.Target.Name,
 			Namespace: src.Spec.Target.Namespace,
@@ -94,6 +84,36 @@ func (dst *SopsSecret) ConvertFrom(srcRaw conversion.Hub) error {
 		Conditions:                  src.Status.Conditions,
 	}
 	return nil
+}
+
+// convertDecryptionTo converts an optional decryption block to the hub
+// version. Nil stays nil: since #47 an absent block means "use the
+// operator's global age key", which is not the same as an empty keyRef.
+func convertDecryptionTo(in *DecryptionSpec) *v1alpha2.DecryptionSpec {
+	if in == nil {
+		return nil
+	}
+	return &v1alpha2.DecryptionSpec{
+		KeyRef: v1alpha2.SecretKeyRef{
+			Name:      in.KeyRef.Name,
+			Key:       in.KeyRef.Key,
+			Namespace: in.KeyRef.Namespace,
+		},
+	}
+}
+
+// convertDecryptionFrom is convertDecryptionTo in the other direction.
+func convertDecryptionFrom(in *v1alpha2.DecryptionSpec) *DecryptionSpec {
+	if in == nil {
+		return nil
+	}
+	return &DecryptionSpec{
+		KeyRef: SecretKeyRef{
+			Name:      in.KeyRef.Name,
+			Key:       in.KeyRef.Key,
+			Namespace: in.KeyRef.Namespace,
+		},
+	}
 }
 
 func convertDataMappingsTo(in []DataMapping) []v1alpha2.DataMapping {

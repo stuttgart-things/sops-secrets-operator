@@ -82,7 +82,7 @@ var _ = Describe("InlineSopsSecret happy path (envtest)", func() {
 				Spec: sopsv1alpha1.InlineSopsSecretSpec{
 					Mode:          sopsv1alpha1.InlineModeMapping,
 					EncryptedYAML: string(ct),
-					Decryption: sopsv1alpha1.DecryptionSpec{
+					Decryption: &sopsv1alpha1.DecryptionSpec{
 						KeyRef: sopsv1alpha1.SecretKeyRef{Name: keySecret, Key: "age.agekey"},
 					},
 					Data: []sopsv1alpha1.DataMapping{
@@ -125,7 +125,7 @@ var _ = Describe("InlineSopsSecret happy path (envtest)", func() {
 				Spec: sopsv1alpha1.InlineSopsSecretSpec{
 					Mode:          sopsv1alpha1.InlineModeMapping,
 					EncryptedYAML: string(ct),
-					Decryption: sopsv1alpha1.DecryptionSpec{
+					Decryption: &sopsv1alpha1.DecryptionSpec{
 						KeyRef: sopsv1alpha1.SecretKeyRef{Name: keySecret, Key: "age.agekey"},
 					},
 					Data: []sopsv1alpha1.DataMapping{{Key: "TOKEN", From: "token"}},
@@ -163,7 +163,7 @@ var _ = Describe("InlineSopsSecret happy path (envtest)", func() {
 				Spec: sopsv1alpha1.InlineSopsSecretSpec{
 					Mode:          sopsv1alpha1.InlineModeMapping,
 					EncryptedYAML: string(ct),
-					Decryption: sopsv1alpha1.DecryptionSpec{
+					Decryption: &sopsv1alpha1.DecryptionSpec{
 						KeyRef: sopsv1alpha1.SecretKeyRef{Name: keySecret, Key: "age.agekey"},
 					},
 					Data: []sopsv1alpha1.DataMapping{{Key: "TOKEN", From: "token"}},
@@ -205,7 +205,7 @@ var _ = Describe("InlineSopsSecret happy path (envtest)", func() {
 				Spec: sopsv1alpha1.InlineSopsSecretSpec{
 					Mode:          sopsv1alpha1.InlineModeMapping,
 					EncryptedYAML: string(ct),
-					Decryption: sopsv1alpha1.DecryptionSpec{
+					Decryption: &sopsv1alpha1.DecryptionSpec{
 						KeyRef: sopsv1alpha1.SecretKeyRef{Name: keySecret, Key: "age.agekey"},
 					},
 					Data: []sopsv1alpha1.DataMapping{{Key: "TOKEN", From: "token"}},
@@ -254,7 +254,7 @@ stringData:
 				Spec: sopsv1alpha1.InlineSopsSecretSpec{
 					Mode:          sopsv1alpha1.InlineModeManifest,
 					EncryptedYAML: string(ct),
-					Decryption: sopsv1alpha1.DecryptionSpec{
+					Decryption: &sopsv1alpha1.DecryptionSpec{
 						KeyRef: sopsv1alpha1.SecretKeyRef{Name: keySecret, Key: "age.agekey"},
 					},
 					Target: sopsv1alpha1.InlineTarget{

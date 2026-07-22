@@ -299,6 +299,85 @@ The default install (`kubectl apply -k config/default`) wires this end-to-end vi
 
 If you cannot run cert-manager, either provision the webhook cert externally and patch the CRDs' `spec.conversion.webhook.clientConfig.caBundle` yourself, or stick to v1alpha2 manifests (which match the storage version and never go through `/convert`).
 
+## Sharing credentials across namespaces
+
+By default every resource names its own Secrets, in its own namespace: the age key via `spec.decryption.keyRef`, the git or object credential via `spec.auth.secretRef`. On a multi-tenant cluster that is the right default — it is also the only thing the operator could do before v0.9.0.
+
+On a single-tenant cluster it means copying the same age key and the same read-only PAT into every namespace. Two opt-in mechanisms remove that, and they compose: a **global default** for resources that name nothing, and a **cross-namespace reference** for resources that want to name something shared explicitly.
+
+### Global defaults
+
+Point the operator at one Secret per credential kind. Resources that omit the reference use it; resources that set one are unaffected.
+
+```sh
+--global-age-key-secret=sops-secrets-operator-system/sops-age-key
+--global-age-key-data-key=age.agekey        # default
+--global-git-auth-secret=sops-secrets-operator-system/git-readonly
+--global-object-auth-secret=sops-secrets-operator-system/object-readonly
+```
+
+With `--global-age-key-secret` set, this is a complete `SopsSecret` — no `decryption` block at all:
+
+```yaml
+apiVersion: sops.stuttgart-things.com/v1alpha2
+kind: SopsSecret
+metadata:
+  name: app-creds
+  namespace: team-a
+spec:
+  source:
+    sourceRef: {kind: GitRepository, name: platform-secrets}
+    path: team-a/creds.enc.yaml
+  target: {name: app-creds}
+  data:
+    - {key: PASSWORD, from: password}
+```
+
+Same for `spec.auth` on a `GitRepository`: give the `type` and omit `secretRef`. Note that omitting `spec.auth` **entirely** still means "clone unauthenticated" — that has not changed, and no global default is consulted.
+
+Precedence is always: the resource's own reference → the global default → an error naming which flag is missing.
+
+### Cross-namespace references
+
+Alternatively a resource can point at a Secret in a shared namespace. Both `secretRef` and `keyRef` take an optional `namespace`:
+
+```yaml
+spec:
+  auth:
+    type: basic
+    secretRef:
+      name: git-readonly
+      namespace: platform-creds
+  decryption:
+    keyRef:
+      name: shared-age
+      key: age.agekey
+      namespace: platform-creds
+```
+
+This is **refused unless the operator permits that namespace**:
+
+```sh
+--secret-ref-namespaces=platform-creds,shared-creds
+```
+
+Without the flag the field parses but the resource fails with an explicit error rather than reading the Secret. That is deliberate: the default has to stay same-namespace-only, or upgrading the operator would silently widen what existing resources can read.
+
+> **Read this before enabling it.** The operator holds cluster-wide Secret read. It does not — and cannot, from a `secretRef` alone — check whether the *author* of the resource was allowed to read the Secret they pointed at. So any principal who can create a `SopsSecret` in **any** namespace can make the operator read any Secret in the namespaces you list here, and write its contents into a Secret they control. Grant only namespaces whose contents you are willing to expose to every resource author on the cluster, and prefer a global default when a single shared credential is all you need — that one cannot be aimed by a tenant.
+
+The global defaults are **not** subject to `--secret-ref-namespaces`. The cluster admin set them by flag; the allowlist exists to constrain what tenants can aim the operator at, not the admin's own configuration.
+
+### Telling them apart afterwards
+
+Which credential a resource actually used shows up on its conditions, so a tenant that silently fell back to the shared key is distinguishable from one using its own:
+
+```sh
+kubectl get sopssecret app-creds -n team-a -o jsonpath='{.status.conditions[?(@.type=="Decrypted")].message}'
+# decryption + mapping ok, using the operator's global age key
+```
+
+`GitRepository`'s `AuthResolved` condition carries the same distinction. The operator also logs the effective policy once at startup.
+
 ## Security model
 
 See [SECURITY.md](./SECURITY.md) for the full threat model. Highlights:
@@ -307,6 +386,7 @@ See [SECURITY.md](./SECURITY.md) for the full threat model. Highlights:
 - SSH auth requires `knownHosts` — no insecure-skip option.
 - Adoption of pre-existing un-owned Secrets is opt-in (`target.adopt: true`).
 - SOPS MAC verification is preserved (integrity check on encrypted files is not disabled).
+- Cross-namespace Secret references are off by default and gated by `--secret-ref-namespaces`; see the caveat above before enabling them.
 
 ## Development
 

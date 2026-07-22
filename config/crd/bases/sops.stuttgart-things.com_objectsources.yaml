@@ -65,13 +65,26 @@ spec:
                   ObjectAuth configures authentication for an ObjectSource.
 
                   For "none" the SecretRef must be omitted. For every other type a
-                  SecretRef is required with backend-appropriate keys.
+                  SecretRef is required with backend-appropriate keys, unless the operator
+                  runs with --global-object-auth-secret, which supplies the default.
                 properties:
                   secretRef:
-                    description: LocalObjectReference is a reference to an object
-                      in the same namespace.
+                    description: |-
+                      SecretReference references a Secret, by default in the same namespace as
+                      the referring resource.
                     properties:
                       name:
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace holding the Secret. Defaults to the namespace of the
+                          referring resource.
+
+                          Reading a Secret from another namespace is refused unless the
+                          operator was started with --secret-ref-namespaces listing that
+                          namespace. Without that flag this field has no effect other than to
+                          make the resource fail with an explicit error.
                         minLength: 1
                         type: string
                     required:

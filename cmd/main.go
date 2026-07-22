@@ -20,7 +20,9 @@ import (
 	"context"
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -41,6 +43,7 @@ import (
 	sopsv1alpha1 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha1"
 	sopsv1alpha2 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha2"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/controller"
+	"github.com/stuttgart-things/sops-secrets-operator/internal/secretref"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/source"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/tracing"
 	// +kubebuilder:scaffold:imports
@@ -90,6 +93,27 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+
+	var globalAgeKeySecret, globalAgeKeyDataKey string
+	var globalGitAuthSecret, globalObjectAuthSecret string
+	var secretRefNamespaces string
+	flag.StringVar(&globalAgeKeySecret, "global-age-key-secret", "",
+		"Secret holding the age private key to use for resources that omit spec.decryption.keyRef, "+
+			"as <namespace>/<name>. Unset (the default) means every resource must name its own key.")
+	flag.StringVar(&globalAgeKeyDataKey, "global-age-key-data-key", "age.agekey",
+		"Entry within --global-age-key-secret that holds the age private key.")
+	flag.StringVar(&globalGitAuthSecret, "global-git-auth-secret", "",
+		"Secret holding the git credential to use for GitRepositories whose spec.auth omits secretRef, "+
+			"as <namespace>/<name>. Unset (the default) means every GitRepository must name its own.")
+	flag.StringVar(&globalObjectAuthSecret, "global-object-auth-secret", "",
+		"Secret holding the credential to use for ObjectSources whose spec.auth omits secretRef, "+
+			"as <namespace>/<name>. Unset (the default) means every ObjectSource must name its own.")
+	flag.StringVar(&secretRefNamespaces, "secret-ref-namespaces", "",
+		"Comma-separated namespaces that resources may reference Secrets from via the optional "+
+			"namespace field on secretRef/keyRef. Unset (the default) permits same-namespace "+
+			"references only. Note that any principal able to create a resource in any namespace can "+
+			"make the operator read Secrets from the namespaces listed here.")
+
 	opts := zap.Options{
 		Development: true,
 	}
@@ -97,6 +121,21 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// Credential policy: which namespaces resources may reach into, and
+	// which Secrets stand in when a resource names none. All-empty means
+	// same-namespace only with no fallbacks, which is how the operator
+	// behaved before these flags existed.
+	credentials, err := buildCredentialPolicy(
+		globalAgeKeySecret, globalAgeKeyDataKey,
+		globalGitAuthSecret, globalObjectAuthSecret,
+		secretRefNamespaces,
+	)
+	if err != nil {
+		setupLog.Error(err, "Invalid credential configuration")
+		os.Exit(1)
+	}
+	logCredentialPolicy(credentials)
 
 	// Tracing is opt-in via OTEL_EXPORTER_OTLP_ENDPOINT (or _TRACES_ENDPOINT).
 	// With no endpoint configured, Setup installs a no-op TracerProvider so
@@ -208,40 +247,45 @@ func main() {
 	registry := source.NewRegistry()
 
 	if err := (&controller.GitRepositoryReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Registry: registry,
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		Registry:         registry,
+		CredentialPolicy: credentials,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "GitRepository")
 		os.Exit(1)
 	}
 	if err := (&controller.SopsSecretReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Registry: registry,
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		Registry:         registry,
+		CredentialPolicy: credentials,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "SopsSecret")
 		os.Exit(1)
 	}
 	if err := (&controller.SopsSecretManifestReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Registry: registry,
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		Registry:         registry,
+		CredentialPolicy: credentials,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "SopsSecretManifest")
 		os.Exit(1)
 	}
 	if err := (&controller.InlineSopsSecretReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		CredentialPolicy: credentials,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "InlineSopsSecret")
 		os.Exit(1)
 	}
 	if err := (&controller.ObjectSourceReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Registry: registry,
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		Registry:         registry,
+		CredentialPolicy: credentials,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "ObjectSource")
 		os.Exit(1)
@@ -266,5 +310,65 @@ func main() {
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
+	}
+}
+
+// buildCredentialPolicy turns the credential flags into the policy the
+// reconcilers share. Every flag is optional; the zero policy is the
+// behaviour that shipped before --global-*-secret and
+// --secret-ref-namespaces existed.
+func buildCredentialPolicy(
+	ageKeySecret, ageKeyDataKey string,
+	gitAuthSecret, objectAuthSecret string,
+	refNamespaces string,
+) (controller.CredentialPolicy, error) {
+	var p controller.CredentialPolicy
+
+	ageKey, err := secretref.ParseGlobal(ageKeySecret, ageKeyDataKey)
+	if err != nil {
+		return p, fmt.Errorf("--global-age-key-secret: %w", err)
+	}
+	gitAuth, err := secretref.ParseGlobal(gitAuthSecret, "")
+	if err != nil {
+		return p, fmt.Errorf("--global-git-auth-secret: %w", err)
+	}
+	objectAuth, err := secretref.ParseGlobal(objectAuthSecret, "")
+	if err != nil {
+		return p, fmt.Errorf("--global-object-auth-secret: %w", err)
+	}
+
+	var namespaces []string
+	if strings.TrimSpace(refNamespaces) != "" {
+		namespaces = strings.Split(refNamespaces, ",")
+	}
+
+	p.SecretRefs = secretref.NewResolver(namespaces)
+	p.GlobalAgeKey = ageKey
+	p.GlobalGitAuth = gitAuth
+	p.GlobalObjectAuth = objectAuth
+	return p, nil
+}
+
+// logCredentialPolicy records the effective policy at startup. Which
+// credentials a cluster shares, and which namespaces it lets resources
+// reach into, should be visible in the log without reading the Deployment.
+func logCredentialPolicy(p controller.CredentialPolicy) {
+	describe := func(g *secretref.Global) string {
+		if g == nil {
+			return "<unset>"
+		}
+		return g.Namespace + "/" + g.Name
+	}
+	allowed := p.SecretRefs.AllowedNamespaces()
+	setupLog.Info("Credential policy",
+		"globalAgeKeySecret", describe(p.GlobalAgeKey),
+		"globalGitAuthSecret", describe(p.GlobalGitAuth),
+		"globalObjectAuthSecret", describe(p.GlobalObjectAuth),
+		"crossNamespaceSecretRefsAllowedFrom", allowed,
+	)
+	if len(allowed) > 0 {
+		setupLog.Info("Cross-namespace Secret references are enabled: any principal able to create "+
+			"a resource in any namespace can make this operator read Secrets from these namespaces",
+			"namespaces", allowed)
 	}
 }

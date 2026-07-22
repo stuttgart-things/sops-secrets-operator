@@ -45,7 +45,7 @@ var _ = Describe("InlineSopsSecret Controller", func() {
 			Spec: sopsv1alpha1.InlineSopsSecretSpec{
 				Mode:          sopsv1alpha1.InlineModeMapping,
 				EncryptedYAML: "not-real-ciphertext",
-				Decryption: sopsv1alpha1.DecryptionSpec{
+				Decryption: &sopsv1alpha1.DecryptionSpec{
 					KeyRef: sopsv1alpha1.SecretKeyRef{Name: "age-key", Key: "age.agekey"},
 				},
 				Data: []sopsv1alpha1.DataMapping{{Key: "K", From: "k"}},
@@ -114,7 +114,7 @@ var _ = Describe("InlineSopsSecret Controller", func() {
 				Spec: sopsv1alpha1.InlineSopsSecretSpec{
 					Mode:          sopsv1alpha1.InlineModeMapping,
 					EncryptedYAML: "x",
-					Decryption: sopsv1alpha1.DecryptionSpec{
+					Decryption: &sopsv1alpha1.DecryptionSpec{
 						KeyRef: sopsv1alpha1.SecretKeyRef{Name: "k", Key: "age"},
 					},
 					Data: []sopsv1alpha1.DataMapping{},
@@ -130,7 +130,7 @@ var _ = Describe("InlineSopsSecret Controller", func() {
 				Spec: sopsv1alpha1.InlineSopsSecretSpec{
 					Mode:          sopsv1alpha1.InlineModeManifest,
 					EncryptedYAML: "x",
-					Decryption: sopsv1alpha1.DecryptionSpec{
+					Decryption: &sopsv1alpha1.DecryptionSpec{
 						KeyRef: sopsv1alpha1.SecretKeyRef{Name: "k", Key: "age"},
 					},
 					Data: []sopsv1alpha1.DataMapping{{Key: "K", From: "k"}},
@@ -146,7 +146,7 @@ var _ = Describe("InlineSopsSecret Controller", func() {
 				Spec: sopsv1alpha1.InlineSopsSecretSpec{
 					Mode:          sopsv1alpha1.InlineModeManifest,
 					EncryptedYAML: "",
-					Decryption: sopsv1alpha1.DecryptionSpec{
+					Decryption: &sopsv1alpha1.DecryptionSpec{
 						KeyRef: sopsv1alpha1.SecretKeyRef{Name: "k", Key: "age"},
 					},
 				},

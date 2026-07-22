@@ -77,7 +77,7 @@ var _ = Describe("GitRepository Controller", func() {
 					Branch: "main",
 					Auth: &sopsv1alpha1.GitAuth{
 						Type:      sopsv1alpha1.GitAuthBasic,
-						SecretRef: sopsv1alpha1.LocalObjectReference{Name: "does-not-exist"},
+						SecretRef: &sopsv1alpha1.SecretReference{Name: "does-not-exist"},
 					},
 				},
 			})).To(Succeed())
@@ -111,7 +111,7 @@ var _ = Describe("GitRepository Controller", func() {
 					URL: "git@example.invalid:foo/bar.git",
 					Auth: &sopsv1alpha1.GitAuth{
 						Type:      sopsv1alpha1.GitAuthSSH,
-						SecretRef: sopsv1alpha1.LocalObjectReference{Name: sec.Name},
+						SecretRef: &sopsv1alpha1.SecretReference{Name: sec.Name},
 					},
 				},
 			})).To(Succeed())
@@ -137,7 +137,7 @@ var _ = Describe("GitRepository Controller", func() {
 					Branch: "main",
 					Auth: &sopsv1alpha1.GitAuth{
 						Type:      sopsv1alpha1.GitAuthBasic,
-						SecretRef: sopsv1alpha1.LocalObjectReference{Name: "missing"},
+						SecretRef: &sopsv1alpha1.SecretReference{Name: "missing"},
 					},
 				},
 			})).To(Succeed())

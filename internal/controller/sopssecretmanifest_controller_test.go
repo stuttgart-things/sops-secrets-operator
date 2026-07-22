@@ -52,7 +52,7 @@ var _ = Describe("SopsSecretManifest Controller", func() {
 					},
 					Path: "secret.enc.yaml",
 				},
-				Decryption: sopsv1alpha2.DecryptionSpec{
+				Decryption: &sopsv1alpha2.DecryptionSpec{
 					KeyRef: sopsv1alpha2.SecretKeyRef{Name: "age-key", Key: "age.agekey"},
 				},
 			},

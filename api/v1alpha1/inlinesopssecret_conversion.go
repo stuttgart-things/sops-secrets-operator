@@ -24,12 +24,7 @@ func (src *InlineSopsSecret) ConvertTo(dstRaw conversion.Hub) error {
 	dst.Spec = v1alpha2.InlineSopsSecretSpec{
 		Mode:          v1alpha2.InlineMode(src.Spec.Mode),
 		EncryptedYAML: src.Spec.EncryptedYAML,
-		Decryption: v1alpha2.DecryptionSpec{
-			KeyRef: v1alpha2.SecretKeyRef{
-				Name: src.Spec.Decryption.KeyRef.Name,
-				Key:  src.Spec.Decryption.KeyRef.Key,
-			},
-		},
+		Decryption:    convertDecryptionTo(src.Spec.Decryption),
 		Target: v1alpha2.InlineTarget{
 			Name:      src.Spec.Target.Name,
 			Namespace: src.Spec.Target.Namespace,
@@ -54,12 +49,7 @@ func (dst *InlineSopsSecret) ConvertFrom(srcRaw conversion.Hub) error {
 	dst.Spec = InlineSopsSecretSpec{
 		Mode:          InlineMode(src.Spec.Mode),
 		EncryptedYAML: src.Spec.EncryptedYAML,
-		Decryption: DecryptionSpec{
-			KeyRef: SecretKeyRef{
-				Name: src.Spec.Decryption.KeyRef.Name,
-				Key:  src.Spec.Decryption.KeyRef.Key,
-			},
-		},
+		Decryption:    convertDecryptionFrom(src.Spec.Decryption),
 		Target: InlineTarget{
 			Name:      src.Spec.Target.Name,
 			Namespace: src.Spec.Target.Namespace,
