@@ -130,7 +130,7 @@ var _ = Describe("ObjectSource Controller", func() {
 					URL: srv.URL,
 					Auth: &sopsv1alpha2.ObjectAuth{
 						Type:      sopsv1alpha2.ObjectAuthBearer,
-						SecretRef: &sopsv1alpha2.LocalObjectReference{Name: secName},
+						SecretRef: &sopsv1alpha2.SecretReference{Name: secName},
 					},
 				},
 			})).To(Succeed())
@@ -157,7 +157,7 @@ var _ = Describe("ObjectSource Controller", func() {
 					URL: "https://example.invalid/x",
 					Auth: &sopsv1alpha2.ObjectAuth{
 						Type:      sopsv1alpha2.ObjectAuthBearer,
-						SecretRef: &sopsv1alpha2.LocalObjectReference{Name: "does-not-exist"},
+						SecretRef: &sopsv1alpha2.SecretReference{Name: "does-not-exist"},
 					},
 				},
 			})).To(Succeed())
@@ -224,7 +224,7 @@ var _ = Describe("ObjectSource Controller", func() {
 					},
 					Auth: &sopsv1alpha2.ObjectAuth{
 						Type:      sopsv1alpha2.ObjectAuthS3,
-						SecretRef: &sopsv1alpha2.LocalObjectReference{Name: secName},
+						SecretRef: &sopsv1alpha2.SecretReference{Name: secName},
 					},
 				},
 			})).To(Succeed())

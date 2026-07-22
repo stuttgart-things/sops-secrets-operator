@@ -32,7 +32,7 @@ func TestGitRepositoryConversion_Roundtrip(t *testing.T) {
 			Interval: metav1.Duration{Duration: 5 * time.Minute},
 			Auth: &sopsv1alpha1.GitAuth{
 				Type:      sopsv1alpha1.GitAuthSSH,
-				SecretRef: sopsv1alpha1.LocalObjectReference{Name: "git-creds"},
+				SecretRef: &sopsv1alpha1.SecretReference{Name: "git-creds"},
 			},
 		},
 		Status: sopsv1alpha1.GitRepositoryStatus{
@@ -66,7 +66,7 @@ func TestSopsSecretConversion_Roundtrip(t *testing.T) {
 				RepositoryRef: sopsv1alpha1.LocalObjectReference{Name: "platform-secrets"},
 				Path:          "creds.enc.yaml",
 			},
-			Decryption: sopsv1alpha1.DecryptionSpec{
+			Decryption: &sopsv1alpha1.DecryptionSpec{
 				KeyRef: sopsv1alpha1.SecretKeyRef{Name: "age-key", Key: "age.agekey"},
 			},
 			Target: sopsv1alpha1.MappingTarget{
@@ -133,7 +133,7 @@ func TestSopsSecretManifestConversion_Roundtrip(t *testing.T) {
 				RepositoryRef: sopsv1alpha1.LocalObjectReference{Name: "platform-secrets"},
 				Path:          "tls.enc.yaml",
 			},
-			Decryption: sopsv1alpha1.DecryptionSpec{
+			Decryption: &sopsv1alpha1.DecryptionSpec{
 				KeyRef: sopsv1alpha1.SecretKeyRef{Name: "age-key", Key: "age.agekey"},
 			},
 			Target: sopsv1alpha1.ManifestTarget{
@@ -162,7 +162,7 @@ func TestInlineSopsSecretConversion_Roundtrip(t *testing.T) {
 		Spec: sopsv1alpha1.InlineSopsSecretSpec{
 			Mode:          sopsv1alpha1.InlineModeMapping,
 			EncryptedYAML: "ENC[...]",
-			Decryption: sopsv1alpha1.DecryptionSpec{
+			Decryption: &sopsv1alpha1.DecryptionSpec{
 				KeyRef: sopsv1alpha1.SecretKeyRef{Name: "age-key", Key: "age.agekey"},
 			},
 			Target: sopsv1alpha1.InlineTarget{
@@ -184,4 +184,108 @@ func TestInlineSopsSecretConversion_Roundtrip(t *testing.T) {
 	if diff := cmp.Diff(src, back); diff != "" {
 		t.Errorf("round-trip mismatch (-want +got):\n%s", diff)
 	}
+}
+
+// TestConversion_CarriesCrossNamespaceRefs guards the fields added in
+// #47/#48. Conversion is hand-written, so a new field is silently dropped
+// unless someone remembers to copy it — which is exactly what happened to
+// keyRef.namespace and auth.secretRef.namespace on the first cut.
+func TestConversion_CarriesCrossNamespaceRefs(t *testing.T) {
+	t.Run("GitRepository auth secretRef namespace", func(t *testing.T) {
+		src := &sopsv1alpha1.GitRepository{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-repo", Namespace: "team-a"},
+			Spec: sopsv1alpha1.GitRepositorySpec{
+				URL: "https://git.example/org/repo.git",
+				Auth: &sopsv1alpha1.GitAuth{
+					Type: sopsv1alpha1.GitAuthBasic,
+					SecretRef: &sopsv1alpha1.SecretReference{
+						Name:      "git-readonly",
+						Namespace: "platform-creds",
+					},
+				},
+			},
+		}
+
+		hub := &sopsv1alpha2.GitRepository{}
+		if err := src.ConvertTo(hub); err != nil {
+			t.Fatalf("ConvertTo: %v", err)
+		}
+		if hub.Spec.Auth.SecretRef == nil {
+			t.Fatal("hub lost the secretRef entirely")
+		}
+		if got := hub.Spec.Auth.SecretRef.Namespace; got != "platform-creds" {
+			t.Errorf("hub secretRef.namespace: got %q, want %q", got, "platform-creds")
+		}
+
+		back := &sopsv1alpha1.GitRepository{}
+		if err := back.ConvertFrom(hub); err != nil {
+			t.Fatalf("ConvertFrom: %v", err)
+		}
+		if diff := cmp.Diff(src, back); diff != "" {
+			t.Errorf("round-trip mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("GitRepository auth without a secretRef", func(t *testing.T) {
+		// Valid since #48: the operator's --global-git-auth-secret supplies
+		// the credential. Conversion must not invent an empty one.
+		src := &sopsv1alpha1.GitRepository{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-repo", Namespace: "team-a"},
+			Spec: sopsv1alpha1.GitRepositorySpec{
+				URL:  "https://git.example/org/repo.git",
+				Auth: &sopsv1alpha1.GitAuth{Type: sopsv1alpha1.GitAuthBasic},
+			},
+		}
+
+		hub := &sopsv1alpha2.GitRepository{}
+		if err := src.ConvertTo(hub); err != nil {
+			t.Fatalf("ConvertTo: %v", err)
+		}
+		if hub.Spec.Auth.SecretRef != nil {
+			t.Errorf("hub invented a secretRef: %+v", hub.Spec.Auth.SecretRef)
+		}
+
+		back := &sopsv1alpha1.GitRepository{}
+		if err := back.ConvertFrom(hub); err != nil {
+			t.Fatalf("ConvertFrom: %v", err)
+		}
+		if diff := cmp.Diff(src, back); diff != "" {
+			t.Errorf("round-trip mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("decryption keyRef namespace", func(t *testing.T) {
+		src := &sopsv1alpha1.SopsSecret{
+			ObjectMeta: metav1.ObjectMeta{Name: "creds", Namespace: "team-a"},
+			Spec: sopsv1alpha1.SopsSecretSpec{
+				Source: sopsv1alpha1.SourceRef{
+					RepositoryRef: sopsv1alpha1.LocalObjectReference{Name: "platform-secrets"},
+					Path:          "creds.enc.yaml",
+				},
+				Decryption: &sopsv1alpha1.DecryptionSpec{
+					KeyRef: sopsv1alpha1.SecretKeyRef{
+						Name:      "shared-age",
+						Key:       "age.agekey",
+						Namespace: "platform-creds",
+					},
+				},
+			},
+		}
+
+		hub := &sopsv1alpha2.SopsSecret{}
+		if err := src.ConvertTo(hub); err != nil {
+			t.Fatalf("ConvertTo: %v", err)
+		}
+		if got := hub.Spec.Decryption.KeyRef.Namespace; got != "platform-creds" {
+			t.Errorf("hub keyRef.namespace: got %q, want %q", got, "platform-creds")
+		}
+
+		back := &sopsv1alpha1.SopsSecret{}
+		if err := back.ConvertFrom(hub); err != nil {
+			t.Fatalf("ConvertFrom: %v", err)
+		}
+		if diff := cmp.Diff(src, back); diff != "" {
+			t.Errorf("round-trip mismatch (-want +got):\n%s", diff)
+		}
+	})
 }

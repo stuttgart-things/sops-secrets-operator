@@ -124,7 +124,7 @@ var _ = Describe("Git-sourced happy paths (envtest)", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: prefix, Namespace: namespace},
 				Spec: sopsv1alpha2.SopsSecretSpec{
 					Source: gitSourceRef(fx.repoCRRef, "creds.enc.yaml"),
-					Decryption: sopsv1alpha2.DecryptionSpec{
+					Decryption: &sopsv1alpha2.DecryptionSpec{
 						KeyRef: sopsv1alpha2.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
 					},
 					Data: []sopsv1alpha2.DataMapping{
@@ -198,7 +198,7 @@ var _ = Describe("Git-sourced happy paths (envtest)", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: prefix, Namespace: namespace},
 				Spec: sopsv1alpha2.SopsSecretSpec{
 					Source: gitSourceRef(fx.repoCRRef, "adopt.enc.yaml"),
-					Decryption: sopsv1alpha2.DecryptionSpec{
+					Decryption: &sopsv1alpha2.DecryptionSpec{
 						KeyRef: sopsv1alpha2.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
 					},
 					Data: []sopsv1alpha2.DataMapping{
@@ -260,7 +260,7 @@ var _ = Describe("Git-sourced happy paths (envtest)", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: prefix, Namespace: namespace},
 				Spec: sopsv1alpha2.SopsSecretSpec{
 					Source: gitSourceRef(fx.repoCRRef, "drift.enc.yaml"),
-					Decryption: sopsv1alpha2.DecryptionSpec{
+					Decryption: &sopsv1alpha2.DecryptionSpec{
 						KeyRef: sopsv1alpha2.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
 					},
 					Data: []sopsv1alpha2.DataMapping{{Key: "TOKEN", From: "token"}},
@@ -305,7 +305,7 @@ var _ = Describe("Git-sourced happy paths (envtest)", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: prefix, Namespace: namespace},
 				Spec: sopsv1alpha2.SopsSecretSpec{
 					Source: gitSourceRef(fx.repoCRRef, "c.enc.yaml"),
-					Decryption: sopsv1alpha2.DecryptionSpec{
+					Decryption: &sopsv1alpha2.DecryptionSpec{
 						KeyRef: sopsv1alpha2.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
 					},
 					Data: []sopsv1alpha2.DataMapping{{Key: "X", From: "x"}},
@@ -360,7 +360,7 @@ stringData:
 				ObjectMeta: metav1.ObjectMeta{Name: prefix, Namespace: namespace},
 				Spec: sopsv1alpha2.SopsSecretManifestSpec{
 					Source: gitSourceRef(fx.repoCRRef, "sec.enc.yaml"),
-					Decryption: sopsv1alpha2.DecryptionSpec{
+					Decryption: &sopsv1alpha2.DecryptionSpec{
 						KeyRef: sopsv1alpha2.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
 					},
 					Target: sopsv1alpha2.ManifestTarget{
@@ -414,7 +414,7 @@ stringData:
 				ObjectMeta: metav1.ObjectMeta{Name: prefix, Namespace: namespace},
 				Spec: sopsv1alpha2.SopsSecretManifestSpec{
 					Source: gitSourceRef(fx.repoCRRef, "sec.enc.yaml"),
-					Decryption: sopsv1alpha2.DecryptionSpec{
+					Decryption: &sopsv1alpha2.DecryptionSpec{
 						KeyRef: sopsv1alpha2.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
 					},
 				},

@@ -29,8 +29,10 @@ func (src *GitRepository) ConvertTo(dstRaw conversion.Hub) error {
 	}
 	if src.Spec.Auth != nil {
 		dst.Spec.Auth = &v1alpha2.GitAuth{
-			Type:      v1alpha2.GitAuthType(src.Spec.Auth.Type),
-			SecretRef: v1alpha2.LocalObjectReference{Name: src.Spec.Auth.SecretRef.Name},
+			Type: v1alpha2.GitAuthType(src.Spec.Auth.Type),
+		}
+		if r := src.Spec.Auth.SecretRef; r != nil {
+			dst.Spec.Auth.SecretRef = &v1alpha2.SecretReference{Name: r.Name, Namespace: r.Namespace}
 		}
 	}
 	dst.Status = v1alpha2.GitRepositoryStatus{
@@ -56,8 +58,10 @@ func (dst *GitRepository) ConvertFrom(srcRaw conversion.Hub) error {
 	}
 	if src.Spec.Auth != nil {
 		dst.Spec.Auth = &GitAuth{
-			Type:      GitAuthType(src.Spec.Auth.Type),
-			SecretRef: LocalObjectReference{Name: src.Spec.Auth.SecretRef.Name},
+			Type: GitAuthType(src.Spec.Auth.Type),
+		}
+		if r := src.Spec.Auth.SecretRef; r != nil {
+			dst.Spec.Auth.SecretRef = &SecretReference{Name: r.Name, Namespace: r.Namespace}
 		}
 	}
 	dst.Status = GitRepositoryStatus{

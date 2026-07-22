@@ -35,13 +35,14 @@ const (
 // ObjectAuth configures authentication for an ObjectSource.
 //
 // For "none" the SecretRef must be omitted. For every other type a
-// SecretRef is required with backend-appropriate keys.
+// SecretRef is required with backend-appropriate keys, unless the operator
+// runs with --global-object-auth-secret, which supplies the default.
 type ObjectAuth struct {
 	// +kubebuilder:validation:Required
 	Type ObjectAuthType `json:"type"`
 
 	// +optional
-	SecretRef *LocalObjectReference `json:"secretRef,omitempty"`
+	SecretRef *SecretReference `json:"secretRef,omitempty"`
 }
 
 // BucketSpec addresses an object in an S3-compatible bucket.

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -34,6 +35,7 @@ import (
 
 	sopsv1alpha1 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha1"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/git"
+	"github.com/stuttgart-things/sops-secrets-operator/internal/secretref"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/source"
 )
 
@@ -53,9 +55,12 @@ const (
 	resyncAfter = 5 * time.Minute
 
 	// GitRepoAuthSecretIndex is a field index on GitRepository pointing at
-	// the name of its auth secret reference. Used to enqueue GitRepositories
-	// when a referenced Secret changes.
-	GitRepoAuthSecretIndex = ".spec.auth.secretRef.name"
+	// the auth Secret it resolves to, as "<namespace>/<name>". Used to
+	// enqueue GitRepositories when that Secret changes.
+	//
+	// Namespace-qualified since #48: the Secret may live outside the CR's
+	// namespace, so a bare name would collide across namespaces.
+	GitRepoAuthSecretIndex = ".spec.auth.secretRef"
 )
 
 // GitRepositoryReconciler reconciles GitRepository objects.
@@ -63,6 +68,7 @@ type GitRepositoryReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Registry *source.Registry
+	CredentialPolicy
 }
 
 // +kubebuilder:rbac:groups=sops.stuttgart-things.com,resources=gitrepositories,verbs=get;list;watch;create;update;patch;delete
@@ -98,7 +104,7 @@ func (r *GitRepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	authCtx := t.Stage(ctx, StageAuth)
-	auth, err := r.resolveAuth(authCtx, &gr)
+	auth, authOrigin, err := r.resolveAuth(authCtx, &gr)
 	if err != nil {
 		log.Error(err, "auth resolution failed")
 		t.Fail(StageAuth, err)
@@ -110,7 +116,7 @@ func (r *GitRepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 		return ctrl.Result{RequeueAfter: retryAfter}, nil
 	}
-	setCondition(&gr.Status.Conditions, sopsv1alpha1.ConditionAuthResolved, metav1.ConditionTrue, "AuthOK", "auth resolved")
+	setCondition(&gr.Status.Conditions, sopsv1alpha1.ConditionAuthResolved, metav1.ConditionTrue, "AuthOK", describeAuthOrigin(authOrigin))
 
 	cfg := git.Config{
 		URL:      gr.Spec.URL,
@@ -152,41 +158,68 @@ func (r *GitRepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return ctrl.Result{RequeueAfter: interval}, nil
 }
 
-func (r *GitRepositoryReconciler) resolveAuth(ctx context.Context, gr *sopsv1alpha1.GitRepository) (git.Auth, error) {
-	if gr.Spec.Auth == nil {
-		return git.Auth{}, nil
+// gitAuthRef reads the CR's auth reference into the neutral form the
+// resolver takes. A nil secretRef yields the zero Ref, which the resolver
+// reads as "fall back to the operator's default, if any".
+func gitAuthRef(gr *sopsv1alpha1.GitRepository) secretref.Ref {
+	if gr.Spec.Auth == nil || gr.Spec.Auth.SecretRef == nil {
+		return secretref.Ref{}
 	}
+	return secretref.Ref{
+		Namespace: gr.Spec.Auth.SecretRef.Namespace,
+		Name:      gr.Spec.Auth.SecretRef.Name,
+	}
+}
+
+// resolveAuth resolves the credential for a GitRepository. The returned
+// Origin says where it came from, for the AuthResolved condition.
+func (r *GitRepositoryReconciler) resolveAuth(ctx context.Context, gr *sopsv1alpha1.GitRepository) (git.Auth, secretref.Origin, error) {
+	// No auth block at all still means "clone unauthenticated". Only a CR
+	// that asked for auth and named nothing reaches the resolver.
+	if gr.Spec.Auth == nil {
+		return git.Auth{}, "", nil
+	}
+
+	res, err := r.SecretRefs.Resolve(gr.Namespace, gitAuthRef(gr), r.GlobalGitAuth)
+	if err != nil {
+		if errors.Is(err, secretref.ErrNoReference) {
+			return git.Auth{}, "", fmt.Errorf(
+				"spec.auth is set but names no secretRef, and the operator has no --global-git-auth-secret configured")
+		}
+		return git.Auth{}, "", err
+	}
+
 	var sec corev1.Secret
-	if err := r.Get(ctx, client.ObjectKey{Namespace: gr.Namespace, Name: gr.Spec.Auth.SecretRef.Name}, &sec); err != nil {
-		return git.Auth{}, fmt.Errorf("get auth secret: %w", err)
+	if err := r.Get(ctx, res.ObjectKey, &sec); err != nil {
+		return git.Auth{}, "", fmt.Errorf("get auth secret %s/%s: %w", res.Namespace, res.Name, err)
 	}
 
 	switch gr.Spec.Auth.Type {
 	case sopsv1alpha1.GitAuthBasic:
 		if len(sec.Data["password"]) == 0 {
-			return git.Auth{}, fmt.Errorf("auth secret %q: missing 'password' key", sec.Name)
+			return git.Auth{}, "", fmt.Errorf("auth secret %q: missing 'password' key", sec.Name)
 		}
 		return git.Auth{Basic: &git.BasicAuth{
 			Username: string(sec.Data["username"]),
 			Password: string(sec.Data["password"]),
-		}}, nil
+		}}, res.Origin, nil
 
 	case sopsv1alpha1.GitAuthSSH:
 		if len(sec.Data["privateKey"]) == 0 {
-			return git.Auth{}, fmt.Errorf("auth secret %q: missing 'privateKey' key", sec.Name)
+			return git.Auth{}, "", fmt.Errorf("auth secret %q: missing 'privateKey' key", sec.Name)
 		}
 		if len(sec.Data["knownHosts"]) == 0 {
-			return git.Auth{}, fmt.Errorf("auth secret %q: missing 'knownHosts' key (strict host-key checking is required)", sec.Name)
+			return git.Auth{}, "", fmt.Errorf("auth secret %q: missing 'knownHosts' key (strict host-key checking is required)", sec.Name)
 		}
 		return git.Auth{SSH: &git.SSHAuth{
 			User:       string(sec.Data["user"]),
 			PrivateKey: sec.Data["privateKey"],
 			Passphrase: sec.Data["passphrase"],
 			KnownHosts: sec.Data["knownHosts"],
-		}}, nil
+		}}, res.Origin, nil
 
 	default:
-		return git.Auth{}, fmt.Errorf("unknown auth type %q", gr.Spec.Auth.Type)
+		return git.Auth{}, "", fmt.Errorf("unknown auth type %q", gr.Spec.Auth.Type)
 	}
 }
 
@@ -200,7 +233,7 @@ func (r *GitRepositoryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			if g.Spec.Auth == nil {
 				return nil
 			}
-			return []string{g.Spec.Auth.SecretRef.Name}
+			return r.SecretRefs.IndexValues(g.Namespace, gitAuthRef(g), r.GlobalGitAuth)
 		},
 	); err != nil {
 		return err
@@ -214,10 +247,13 @@ func (r *GitRepositoryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func (r *GitRepositoryReconciler) mapSecretToGitRepos(ctx context.Context, obj client.Object) []reconcile.Request {
+	// Listed across all namespaces on purpose: the index is
+	// namespace-qualified, so a Secret only matches GitRepositories that
+	// actually resolve to it — including ones in other namespaces that
+	// reference it, and ones that fall back to the operator's default.
 	var list sopsv1alpha1.GitRepositoryList
 	if err := r.List(ctx, &list,
-		client.InNamespace(obj.GetNamespace()),
-		client.MatchingFields{GitRepoAuthSecretIndex: obj.GetName()},
+		client.MatchingFields{GitRepoAuthSecretIndex: secretref.IndexKey(obj.GetNamespace(), obj.GetName())},
 	); err != nil {
 		return nil
 	}

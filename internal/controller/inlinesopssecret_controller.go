@@ -31,7 +31,7 @@ import (
 
 	sopsv1alpha1 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha1"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/decrypt"
-	"github.com/stuttgart-things/sops-secrets-operator/internal/keyresolve"
+	"github.com/stuttgart-things/sops-secrets-operator/internal/secretref"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/transform"
 )
 
@@ -43,6 +43,7 @@ const inlineSopsDecryptPath = "inline.yaml"
 type InlineSopsSecretReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	CredentialPolicy
 }
 
 // +kubebuilder:rbac:groups=sops.stuttgart-things.com,resources=inlinesopssecrets,verbs=get;list;watch;create;update;patch;delete
@@ -83,10 +84,11 @@ func (r *InlineSopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// Resolve age key and decrypt the inline payload.
 	decryptCtx := t.Stage(ctx, StageDecrypt)
-	ageKey, err := keyresolve.Age(decryptCtx, r.Client, is.Namespace, keyresolve.SecretKeyRef{
-		Name: is.Spec.Decryption.KeyRef.Name,
-		Key:  is.Spec.Decryption.KeyRef.Key,
-	})
+	var keyRef secretref.Ref
+	if d := is.Spec.Decryption; d != nil {
+		keyRef = ageKeyRef(d.KeyRef.Name, d.KeyRef.Key, d.KeyRef.Namespace)
+	}
+	ageKey, keyOrigin, err := r.resolveAgeKey(decryptCtx, r.Client, is.Namespace, keyRef)
 	if err != nil {
 		t.Fail(StageDecrypt, err)
 		return r.failInlineStatus(ctx, &is, sopsv1alpha1.ConditionDecrypted, "KeyResolveFailed", err.Error())
@@ -110,7 +112,7 @@ func (r *InlineSopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			t.Fail(StageDecrypt, err)
 			return r.failInlineStatus(ctx, &is, sopsv1alpha1.ConditionDecrypted, "MappingFailed", err.Error())
 		}
-		setCondition(&is.Status.Conditions, sopsv1alpha1.ConditionDecrypted, metav1.ConditionTrue, "Decrypted", "decryption + mapping ok")
+		setCondition(&is.Status.Conditions, sopsv1alpha1.ConditionDecrypted, metav1.ConditionTrue, "Decrypted", "decryption + mapping ok, "+describeKeyOrigin(keyOrigin))
 
 		hash := transform.HashSecretData(data)
 		t.SetContentHash(hash)
@@ -145,7 +147,7 @@ func (r *InlineSopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		if ns == "" {
 			ns = is.Namespace
 		}
-		setCondition(&is.Status.Conditions, sopsv1alpha1.ConditionDecrypted, metav1.ConditionTrue, "Decrypted", "decryption + validation ok")
+		setCondition(&is.Status.Conditions, sopsv1alpha1.ConditionDecrypted, metav1.ConditionTrue, "Decrypted", "decryption + validation ok, "+describeKeyOrigin(keyOrigin))
 
 		hash := transform.HashManifestSecret(parsed)
 		t.SetContentHash(hash)

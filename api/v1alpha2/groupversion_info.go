@@ -27,6 +27,12 @@ import (
 var (
 	SchemeGroupVersion = schema.GroupVersion{Group: "sops.stuttgart-things.com", Version: "v1alpha2"}
 	GroupVersion       = SchemeGroupVersion
-	SchemeBuilder      = &scheme.Builder{GroupVersion: SchemeGroupVersion}
-	AddToScheme        = SchemeBuilder.AddToScheme
+	// scheme.Builder is deprecated as of controller-runtime v0.24 in favour
+	// of runtime.NewSchemeBuilder. Migrating is not a local change: every
+	// _types.go here calls SchemeBuilder.Register(&T{}, &TList{}), and
+	// runtime.SchemeBuilder has no Register method — it is a slice of
+	// funcs. Tracked in #92 rather than folded into an unrelated PR.
+	//nolint:staticcheck // SA1019: see note above
+	SchemeBuilder = &scheme.Builder{GroupVersion: SchemeGroupVersion}
+	AddToScheme   = SchemeBuilder.AddToScheme
 )

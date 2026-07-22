@@ -63,6 +63,21 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
+          # Shared credentials, all opt-in. Left unset the operator behaves
+          # as it always has: every resource names its own Secret, in its
+          # own namespace.
+          #
+          # A global default stands in when a resource names nothing:
+          # - --global-age-key-secret=sops-secrets-operator-system/sops-age-key
+          # - --global-age-key-data-key=age.agekey
+          # - --global-git-auth-secret=sops-secrets-operator-system/git-readonly
+          # - --global-object-auth-secret=sops-secrets-operator-system/object-readonly
+          #
+          # Permit resources to name a Secret in another namespace. Read
+          # the security note in the README first: any principal able to
+          # create a resource in ANY namespace can then make the operator
+          # read Secrets out of the namespaces listed here.
+          # - --secret-ref-namespaces=platform-creds
         image: controller:latest
         name: manager
         ports: []

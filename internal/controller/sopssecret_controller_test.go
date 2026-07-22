@@ -52,7 +52,7 @@ var _ = Describe("SopsSecret Controller", func() {
 					},
 					Path: "secrets.enc.yaml",
 				},
-				Decryption: sopsv1alpha2.DecryptionSpec{
+				Decryption: &sopsv1alpha2.DecryptionSpec{
 					KeyRef: sopsv1alpha2.SecretKeyRef{Name: "age-key", Key: "age.agekey"},
 				},
 				Data: []sopsv1alpha2.DataMapping{{Key: "DB_PASSWORD", From: "db_password"}},
@@ -155,7 +155,7 @@ var _ = Describe("SopsSecret Controller", func() {
 						},
 						Path: "x.yaml",
 					},
-					Decryption: sopsv1alpha2.DecryptionSpec{
+					Decryption: &sopsv1alpha2.DecryptionSpec{
 						KeyRef: sopsv1alpha2.SecretKeyRef{Name: "k", Key: "age"},
 					},
 					Data: []sopsv1alpha2.DataMapping{},

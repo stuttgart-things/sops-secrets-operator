@@ -34,6 +34,9 @@ type SourceRef struct {
 
 // DecryptionSpec configures how the source file is decrypted.
 type DecryptionSpec struct {
+	// KeyRef names the Secret holding the age private key. Required when
+	// spec.decryption is present at all; omit the whole block to fall back
+	// to the operator's --global-age-key-secret.
 	// +kubebuilder:validation:Required
 	KeyRef SecretKeyRef `json:"keyRef"`
 }
@@ -78,8 +81,16 @@ type SopsSecretSpec struct {
 	// +kubebuilder:validation:Required
 	Source SourceRef `json:"source"`
 
-	// +kubebuilder:validation:Required
-	Decryption DecryptionSpec `json:"decryption"`
+	// Pointer, not value: encoding/json ignores omitempty on structs, so a
+	// value type would always serialize an empty keyRef and be rejected by
+	// the apiserver's MinLength validation. Kept out of the doc comment
+	// below so it stays out of `kubectl explain`.
+
+	// Decryption selects the age key. May be omitted only when the
+	// operator runs with --global-age-key-secret, in which case that key
+	// is used.
+	// +optional
+	Decryption *DecryptionSpec `json:"decryption,omitempty"`
 
 	// +optional
 	Target MappingTarget `json:"target,omitempty"`

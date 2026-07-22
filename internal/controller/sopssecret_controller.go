@@ -34,7 +34,7 @@ import (
 	sopsv1alpha1 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha1"
 	sopsv1alpha2 "github.com/stuttgart-things/sops-secrets-operator/api/v1alpha2"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/decrypt"
-	"github.com/stuttgart-things/sops-secrets-operator/internal/keyresolve"
+	"github.com/stuttgart-things/sops-secrets-operator/internal/secretref"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/source"
 	"github.com/stuttgart-things/sops-secrets-operator/internal/transform"
 )
@@ -52,6 +52,7 @@ type SopsSecretReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Registry *source.Registry
+	CredentialPolicy
 }
 
 // +kubebuilder:rbac:groups=sops.stuttgart-things.com,resources=sopssecrets,verbs=get;list;watch;create;update;patch;delete
@@ -105,10 +106,11 @@ func (r *SopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	setCondition(&ss.Status.Conditions, sopsv1alpha2.ConditionSourceReady, metav1.ConditionTrue, "Ready", "source is ready")
 
 	decryptCtx := t.Stage(ctx, StageDecrypt)
-	ageKey, err := keyresolve.Age(decryptCtx, r.Client, ss.Namespace, keyresolve.SecretKeyRef{
-		Name: ss.Spec.Decryption.KeyRef.Name,
-		Key:  ss.Spec.Decryption.KeyRef.Key,
-	})
+	var keyRef secretref.Ref
+	if d := ss.Spec.Decryption; d != nil {
+		keyRef = ageKeyRef(d.KeyRef.Name, d.KeyRef.Key, d.KeyRef.Namespace)
+	}
+	ageKey, keyOrigin, err := r.resolveAgeKey(decryptCtx, r.Client, ss.Namespace, keyRef)
 	if err != nil {
 		t.Fail(StageDecrypt, err)
 		return r.failStatus(ctx, &ss, sopsv1alpha2.ConditionDecrypted, "KeyResolveFailed", err.Error())
@@ -129,7 +131,7 @@ func (r *SopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		t.Fail(StageDecrypt, err)
 		return r.failStatus(ctx, &ss, sopsv1alpha2.ConditionDecrypted, "MappingFailed", err.Error())
 	}
-	setCondition(&ss.Status.Conditions, sopsv1alpha2.ConditionDecrypted, metav1.ConditionTrue, "Decrypted", "decryption + mapping ok")
+	setCondition(&ss.Status.Conditions, sopsv1alpha2.ConditionDecrypted, metav1.ConditionTrue, "Decrypted", "decryption + mapping ok, "+describeKeyOrigin(keyOrigin))
 
 	hash := transform.HashSecretData(data)
 	t.SetContentHash(hash)

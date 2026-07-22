@@ -138,7 +138,7 @@ var _ = Describe("ObjectSource-sourced happy paths (envtest)", func() {
 					// path is unused for URL-mode ObjectSource but spec.source.path
 					// is required by the schema; supply a placeholder.
 					Source: objectSourceRef(fx.srcRef, "creds.enc.yaml"),
-					Decryption: sopsv1alpha2.DecryptionSpec{
+					Decryption: &sopsv1alpha2.DecryptionSpec{
 						KeyRef: sopsv1alpha2.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
 					},
 					Data: []sopsv1alpha2.DataMapping{
@@ -181,7 +181,7 @@ var _ = Describe("ObjectSource-sourced happy paths (envtest)", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: prefix, Namespace: namespace},
 				Spec: sopsv1alpha2.SopsSecretSpec{
 					Source: objectSourceRef(fx.srcRef, "drift.enc.yaml"),
-					Decryption: sopsv1alpha2.DecryptionSpec{
+					Decryption: &sopsv1alpha2.DecryptionSpec{
 						KeyRef: sopsv1alpha2.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
 					},
 					Data: []sopsv1alpha2.DataMapping{{Key: "TOKEN", From: "token"}},
@@ -238,7 +238,7 @@ stringData:
 				ObjectMeta: metav1.ObjectMeta{Name: prefix, Namespace: namespace},
 				Spec: sopsv1alpha2.SopsSecretManifestSpec{
 					Source: objectSourceRef(fx.srcRef, "sec.enc.yaml"),
-					Decryption: sopsv1alpha2.DecryptionSpec{
+					Decryption: &sopsv1alpha2.DecryptionSpec{
 						KeyRef: sopsv1alpha2.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
 					},
 					Target: sopsv1alpha2.ManifestTarget{NameOverride: overrideName},
@@ -280,7 +280,7 @@ stringData:
 				ObjectMeta: metav1.ObjectMeta{Name: prefix, Namespace: namespace},
 				Spec: sopsv1alpha2.SopsSecretSpec{
 					Source: objectSourceRef(fx.srcRef, "tok.enc.yaml"),
-					Decryption: sopsv1alpha2.DecryptionSpec{
+					Decryption: &sopsv1alpha2.DecryptionSpec{
 						KeyRef: sopsv1alpha2.SecretKeyRef{Name: fx.keyRef, Key: "age.agekey"},
 					},
 					Data: []sopsv1alpha2.DataMapping{{Key: "TOKEN", From: "token"}},

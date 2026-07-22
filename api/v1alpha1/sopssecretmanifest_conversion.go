@@ -30,12 +30,7 @@ func (src *SopsSecretManifest) ConvertTo(dstRaw conversion.Hub) error {
 			},
 			Path: src.Spec.Source.Path,
 		},
-		Decryption: v1alpha2.DecryptionSpec{
-			KeyRef: v1alpha2.SecretKeyRef{
-				Name: src.Spec.Decryption.KeyRef.Name,
-				Key:  src.Spec.Decryption.KeyRef.Key,
-			},
-		},
+		Decryption: convertDecryptionTo(src.Spec.Decryption),
 		Target: v1alpha2.ManifestTarget{
 			Namespace:    src.Spec.Target.Namespace,
 			NameOverride: src.Spec.Target.NameOverride,
@@ -67,12 +62,7 @@ func (dst *SopsSecretManifest) ConvertFrom(srcRaw conversion.Hub) error {
 			RepositoryRef: LocalObjectReference{Name: src.Spec.Source.SourceRef.Name},
 			Path:          src.Spec.Source.Path,
 		},
-		Decryption: DecryptionSpec{
-			KeyRef: SecretKeyRef{
-				Name: src.Spec.Decryption.KeyRef.Name,
-				Key:  src.Spec.Decryption.KeyRef.Key,
-			},
-		},
+		Decryption: convertDecryptionFrom(src.Spec.Decryption),
 		Target: ManifestTarget{
 			Namespace:    src.Spec.Target.Namespace,
 			NameOverride: src.Spec.Target.NameOverride,

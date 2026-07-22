@@ -41,8 +41,12 @@ type GitAuth struct {
 	// +kubebuilder:validation:Required
 	Type GitAuthType `json:"type"`
 
-	// +kubebuilder:validation:Required
-	SecretRef LocalObjectReference `json:"secretRef"`
+	// SecretRef names the Secret holding the credential. May be omitted
+	// only when the operator runs with --global-git-auth-secret, in which
+	// case that Secret is used. Omitting spec.auth entirely still means
+	// "clone unauthenticated".
+	// +optional
+	SecretRef *SecretReference `json:"secretRef,omitempty"`
 }
 
 // GitRepositorySpec describes a git repository to clone and keep synced.
