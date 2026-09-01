@@ -295,7 +295,33 @@ func main() {
 	// Register the conversion webhook for the v1alpha1 ↔ v1alpha2 hub.
 	// Without this the webhook Server starts but /convert is unhandled,
 	// so the apiserver gets connection refused when admitting v1alpha1 CRs.
-	mgr.GetWebhookServer().Register("/convert", conversion.NewWebhookHandler(mgr.GetScheme(), conversion.NewRegistry()))
+	//
+	// ONLY WHEN A CERTIFICATE WAS SUPPLIED. Registering a handler makes
+	// controller-runtime start the webhook server, and the server needs a
+	// serving certificate; with none it returns
+	//
+	//   open /tmp/k8s-webhook-server/serving-certs/tls.crt: no such file or
+	//   directory
+	//
+	// from mgr.Start(), which takes the WHOLE manager down -- every controller
+	// with it, in a CrashLoopBackOff that says nothing about conversion.
+	//
+	// config/default mounts a cert-manager certificate, so that path and the
+	// e2e job never see this. The kcl deploy profile deliberately ships no
+	// webhook and no cert (it exists precisely to avoid the cert-manager
+	// dependency), and its CRDs are installed with `conversion: None` -- so on
+	// that path the handler is not merely unusable, it is unnecessary. Skipping
+	// it is what the CRDs already say.
+	//
+	// Found on machinery-test1, 2026-09-01, and only after the RBAC gap in #105
+	// was closed: until then the manager blocked in WaitForCacheSync and never
+	// reached the webhook server at all. One defect was hiding the other.
+	if len(webhookCertPath) > 0 {
+		mgr.GetWebhookServer().Register("/convert", conversion.NewWebhookHandler(mgr.GetScheme(), conversion.NewRegistry()))
+	} else {
+		setupLog.Info("No webhook certificate supplied, not registering the conversion webhook",
+			"note", "install the CRDs with conversion: None, or set --webhook-cert-path")
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "Failed to set up health check")
