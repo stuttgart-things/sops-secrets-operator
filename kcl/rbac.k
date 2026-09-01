@@ -3,7 +3,7 @@ ClusterRole + ClusterRoleBinding for sops-secrets-operator.
 
 The operator needs to:
 - watch/update GitRepository, SopsSecret, SopsSecretManifest, InlineSopsSecret
-  CRs (namespaced)
+  and ObjectSource CRs (namespaced)
 - read + write Secrets across namespaces (auth tokens, age keys,
   target Secrets — potentially cross-namespace via target.namespace)
 - emit Events
@@ -22,7 +22,30 @@ clusterRole = {
     rules: [
         {
             apiGroups: ["sops.stuttgart-things.com"]
-            resources: ["gitrepositories", "sopssecrets", "sopssecretmanifests", "inlinesopssecrets"]
+            # EVERY CRD THIS ARTIFACT INSTALLS. objectsources was the one that
+            # was missing, and controller-runtime blocks in WaitForCacheSync
+            # until EVERY informer syncs -- so one un-listable kind starts no
+            # controller at all, not just its own.
+            #
+            # It fails in the worst possible way: the pod is 1/1 Running (the
+            # health probe is a separate bind address), every CR applies
+            # cleanly, and none of them ever gets a status. Found on
+            # machinery-test1, 2026-09-01, after twenty minutes of a
+            # GitRepository and two SopsSecretManifests that looked applied and
+            # reconciled nothing.
+            #
+            # config/rbac/role.yaml already had it: kubebuilder generates that
+            # from the +kubebuilder:rbac markers and followed ObjectSource in
+            # automatically. This file is hand-written and did not, so a
+            # kustomize deploy was fine and the OCI artifact was not.
+            # hack/check-kcl-rbac-parity.py now compares the two.
+            resources: [
+                "gitrepositories"
+                "sopssecrets"
+                "sopssecretmanifests"
+                "inlinesopssecrets"
+                "objectsources"
+            ]
             verbs: ["get", "list", "watch", "update", "patch"]
         }
         {
@@ -32,6 +55,7 @@ clusterRole = {
                 "sopssecrets/status"
                 "sopssecretmanifests/status"
                 "inlinesopssecrets/status"
+                "objectsources/status"
             ]
             verbs: ["get", "update", "patch"]
         }
@@ -42,6 +66,7 @@ clusterRole = {
                 "sopssecrets/finalizers"
                 "sopssecretmanifests/finalizers"
                 "inlinesopssecrets/finalizers"
+                "objectsources/finalizers"
             ]
             verbs: ["update"]
         }
