@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	filippo.io/age v1.3.1
 	github.com/getsops/sops/v3 v3.13.2
-	github.com/go-git/go-git/v5 v5.19.1
+	github.com/go-git/go-git/v5 v5.19.2
 	github.com/google/go-cmp v0.7.0
 	github.com/minio/minio-go/v7 v7.2.1
 	github.com/onsi/ginkgo/v2 v2.32.0
